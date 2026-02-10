@@ -1,0 +1,16 @@
+.env
+.env.*
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+tests/
+*.egg-info/
+.git/
+.gitignore
+docker-compose.yml
+alembic.ini
+README.md
