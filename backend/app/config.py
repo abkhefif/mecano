@@ -80,6 +80,16 @@ class Settings(BaseSettings):
     CANCELLATION_PARTIAL_REFUND_HOURS: int = 12
 
     @model_validator(mode="after")
+    def normalize_database_url(self) -> "Settings":
+        """Convert postgres:// to postgresql+asyncpg:// for Render compatibility."""
+        url = self.DATABASE_URL
+        if url.startswith("postgres://"):
+            self.DATABASE_URL = url.replace("postgres://", "postgresql+asyncpg://", 1)
+        elif url.startswith("postgresql://"):
+            self.DATABASE_URL = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return self
+
+    @model_validator(mode="after")
     def validate_production_settings(self) -> "Settings":
         """Warn in development but fail in production for insecure defaults."""
         if self.is_production:

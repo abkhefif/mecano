@@ -1,7 +1,3 @@
-# TODO SEC-022: Add admin endpoints for user management, mechanic verification,
-# dispute resolution, and platform analytics. Currently there is no admin API —
-# all administrative operations require direct database access.
-
 import uuid as _uuid
 from contextlib import asynccontextmanager
 
