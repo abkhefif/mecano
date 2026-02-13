@@ -1,5 +1,10 @@
 import enum
 
+# PERF-007: These enums are stored as VARCHAR columns in PostgreSQL. Native
+# PG ENUM types would be more storage-efficient and provide DB-level value
+# validation, but VARCHAR is acceptable at current scale and avoids the
+# operational complexity of ALTER TYPE migrations when adding new values.
+
 
 class UserRole(str, enum.Enum):
     MECHANIC = "mechanic"
@@ -95,6 +100,19 @@ class DisputeStatus(str, enum.Enum):
     RESOLVED_BUYER = "resolved_buyer"
     RESOLVED_MECHANIC = "resolved_mechanic"
     CLOSED = "closed"
+
+
+class NotificationType(str, enum.Enum):
+    BOOKING_CREATED = "booking_created"
+    BOOKING_CONFIRMED = "booking_confirmed"
+    BOOKING_REFUSED = "booking_refused"
+    BOOKING_CANCELLED = "booking_cancelled"
+    CHECK_OUT_DONE = "check_out_done"
+    BOOKING_DISPUTED = "booking_disputed"
+    NEW_MESSAGE = "new_message"
+    REMINDER = "reminder"
+    NO_SHOW = "no_show"
+    PROFILE_VERIFICATION = "profile_verification"
 
 
 class RefusalReason(str, enum.Enum):

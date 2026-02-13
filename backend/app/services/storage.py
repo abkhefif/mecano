@@ -11,12 +11,15 @@ logger = structlog.get_logger()
 
 # Maximum file size: 5 MB
 MAX_FILE_SIZE = 5 * 1024 * 1024
-ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png"}
+ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "application/pdf"}
+# SEC-023: Whitelist of allowed upload folders to prevent path traversal
+ALLOWED_UPLOAD_FOLDERS = {"identity", "proofs", "cv", "avatars", "diplomas", "disputes"}
 
 # Magic bytes for file type validation
 MAGIC_BYTES = {
     "image/jpeg": [b"\xff\xd8\xff"],
     "image/png": [b"\x89PNG"],
+    "application/pdf": [b"%PDF"],
 }
 
 
@@ -54,24 +57,37 @@ async def upload_file(file: UploadFile, folder: str) -> str:
     Raises:
         ValueError: If file type or size is invalid.
     """
+    # SEC-023: Validate folder against whitelist to prevent path traversal
+    if folder not in ALLOWED_UPLOAD_FOLDERS:
+        raise ValueError(f"Upload folder '{folder}' is not allowed.")
+
     if file.content_type not in ALLOWED_CONTENT_TYPES:
         raise ValueError(f"File type {file.content_type} not allowed. Use JPEG or PNG.")
 
-    # Read file in chunks to avoid loading large files into memory
+    # Early rejection: check the Content-Length header before reading any bytes.
+    # This avoids buffering an oversized file into memory when the client
+    # declares its size upfront.
+    if file.size is not None and file.size > MAX_FILE_SIZE:
+        raise ValueError(f"File too large. Maximum size is {MAX_FILE_SIZE // (1024 * 1024)} MB.")
+
+    # Read file in bounded chunks. Use a bytearray to avoid quadratic
+    # concatenation cost, and enforce the size limit incrementally so we
+    # never hold more than MAX_FILE_SIZE + CHUNK_SIZE in memory.
     CHUNK_SIZE = 64 * 1024  # 64KB chunks
-    content = b""
-    magic_bytes_validated = False
+    content = bytearray()
 
     while True:
         chunk = await file.read(CHUNK_SIZE)
         if not chunk:
             break
 
-        content += chunk
+        content.extend(chunk)
 
         # Check size early and abort if exceeded
         if len(content) > MAX_FILE_SIZE:
             raise ValueError(f"File too large. Maximum size is {MAX_FILE_SIZE // (1024 * 1024)} MB.")
+
+    content = bytes(content)
 
     # After reading is complete and size is OK, validate magic bytes
     if not _validate_magic_bytes(content, file.content_type):
@@ -80,7 +96,8 @@ async def upload_file(file: UploadFile, folder: str) -> str:
             "The file may be corrupted or mislabeled."
         )
 
-    ext = "jpg" if file.content_type == "image/jpeg" else "png"
+    ext_map = {"image/jpeg": "jpg", "image/png": "png", "application/pdf": "pdf"}
+    ext = ext_map.get(file.content_type, "bin")
     key = f"{folder}/{uuid.uuid4()}.{ext}"
 
     if not settings.R2_ENDPOINT_URL:

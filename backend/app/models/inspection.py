@@ -24,7 +24,7 @@ class InspectionChecklist(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
     booking_id: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("bookings.id"), unique=True, nullable=False
+        GUID(), ForeignKey("bookings.id", ondelete="CASCADE"), unique=True, nullable=False
     )
     brakes: Mapped[ComponentStatus] = mapped_column(String(20), nullable=False)
     tires: Mapped[ComponentStatus] = mapped_column(String(20), nullable=False)

@@ -5,7 +5,8 @@ from datetime import date, time, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
-os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests")
+os.environ.setdefault("JWT_SECRET", "test-secret-for-unit-tests-minimum-32-chars")
+os.environ["STRIPE_SECRET_KEY"] = ""  # Force mock mode in tests
 
 import pytest
 import pytest_asyncio
@@ -83,6 +84,7 @@ async def mechanic_user(db: AsyncSession) -> User:
         password_hash=hash_password("password123"),
         role=UserRole.MECHANIC,
         phone="+33600000002",
+        is_verified=True,
     )
     db.add(user)
     await db.flush()
@@ -102,6 +104,7 @@ async def mechanic_profile(db: AsyncSession, mechanic_user: User) -> MechanicPro
         accepted_vehicle_types=["car", "motorcycle"],
         is_identity_verified=True,
         is_active=True,
+        stripe_account_id="acct_test_fixture",
     )
     db.add(profile)
     await db.flush()

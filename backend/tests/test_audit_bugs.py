@@ -309,8 +309,8 @@ async def test_check_out_broad_exception_masks_real_errors(
         headers=auth_header(token),
     )
     assert response.status_code == 400
-    # The error message says "Invalid checklist data" regardless of the actual error type
-    assert "Invalid checklist" in response.json()["detail"]
+    # SEC-010: Generic error message to avoid leaking internal details
+    assert "Donnees invalides" in response.json()["detail"]
 
 
 # ============================================================
@@ -456,17 +456,25 @@ async def test_check_out_no_plate_validation(
 # ============================================================
 
 
-def test_default_jwt_secret_is_insecure():
+def test_jwt_secret_rejects_short_secrets():
     """
-    BUG: JWT_SECRET defaults to 'change-this-in-production'.
-    If .env is missing, anyone can forge tokens.
+    FIX for BUG-005: JWT_SECRET must be at least 32 chars and not a known weak default.
     """
+    import pytest as _pytest
+    from pydantic import ValidationError
     from app.config import Settings
 
-    # Create settings without any env file overrides
-    settings = Settings(JWT_SECRET="change-this-in-production")
-    assert settings.JWT_SECRET == "change-this-in-production"
-    # This is a known default that allows token forgery
+    # Short secret must be rejected
+    with _pytest.raises(ValidationError, match="at least 32 characters"):
+        Settings(JWT_SECRET="change-this-in-production")
+
+    # Known weak secret must be rejected
+    with _pytest.raises(ValidationError, match="known weak default"):
+        Settings(JWT_SECRET="change-this-to-a-long-random-string-in-production")
+
+    # Valid long secret must be accepted
+    s = Settings(JWT_SECRET="a-very-long-secure-secret-that-is-at-least-32-chars")
+    assert len(s.JWT_SECRET) >= 32
 
 
 # ============================================================

@@ -59,10 +59,10 @@ async def test_upload_file_valid_png():
 
 @pytest.mark.asyncio
 async def test_upload_file_invalid_content_type():
-    """Test uploading a file with an unsupported content type."""
+    """Test uploading a file with content that doesn't match declared type."""
     file = _make_upload_file("test.pdf", b"content", "application/pdf")
 
-    with pytest.raises(ValueError, match="not allowed"):
+    with pytest.raises(ValueError, match="does not match declared type"):
         await upload_file(file, "proofs")
 
 

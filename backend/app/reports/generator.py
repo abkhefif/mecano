@@ -93,6 +93,7 @@ async def generate_pdf(
 
     Returns the URL of the uploaded PDF.
     """
+    # SEC-020: autoescape=True prevents template injection (XSS) in generated HTML
     env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)), autoescape=True)
     env.globals["status_label"] = _status_label
     env.globals["status_class"] = _status_class
@@ -109,7 +110,7 @@ async def generate_pdf(
         vehicle_brand=booking.vehicle_brand,
         vehicle_model=booking.vehicle_model,
         vehicle_year=booking.vehicle_year,
-        entered_plate=proof.entered_plate,
+        entered_plate=proof.entered_plate or "Non renseignée",
         entered_odometer_km=f"{proof.entered_odometer_km:,}".replace(",", " "),
         meeting_address=booking.meeting_address,
         photo_plate_url=proof.photo_plate_url,
@@ -129,3 +130,21 @@ async def generate_pdf(
 
     logger.info("pdf_generated", booking_id=str(booking.id), url=url)
     return url
+
+
+async def generate_payment_receipt(booking_data: dict) -> bytes:
+    """Generate a payment receipt PDF from booking data.
+
+    Returns the raw PDF bytes (not uploaded to storage).
+    """
+    # SEC-020: autoescape=True prevents template injection (XSS) in generated HTML
+    env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)), autoescape=True)
+
+    template = env.get_template("payment_receipt.html")
+
+    html_content = template.render(**booking_data)
+
+    pdf_bytes = await asyncio.to_thread(HTML(string=html_content).write_pdf)
+
+    logger.info("payment_receipt_generated", receipt_number=booking_data.get("receipt_number"))
+    return pdf_bytes

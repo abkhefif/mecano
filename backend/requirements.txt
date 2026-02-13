@@ -43,8 +43,14 @@ slowapi==0.1.9
 # Logging
 structlog==24.4.0
 
+# Error tracking
+sentry-sdk[fastapi]==2.52.0
+
 # HTTP client
 httpx==0.28.1
+
+# Email (Resend)
+resend==2.21.0
 
 # Testing
 pytest==8.3.4

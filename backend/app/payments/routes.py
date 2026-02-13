@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+import stripe
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
@@ -31,7 +32,9 @@ router = APIRouter()
 
 
 @router.post("/onboard-mechanic", response_model=OnboardResponse)
+@limiter.limit("10/hour")
 async def onboard_mechanic(
+    request: Request,
     mechanic: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
     db: AsyncSession = Depends(get_db),
 ):
@@ -78,11 +81,16 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
     try:
         event = verify_webhook_signature(payload, sig_header)
-    except Exception:
+    except stripe.error.SignatureVerificationError as e:
+        logger.error("stripe_webhook_signature_failed", error=str(e))
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid signature")
 
     event_id = event["id"]
     event_type = event["type"]
+
+    # SEC-011: Never log the raw event payload or data.object — it may contain
+    # sensitive payment data (card fingerprints, tokens, customer details).
+    # Only log safe fields: event_type, event_id, booking_id, and amount.
 
     # Idempotency: skip already-processed events
     existing = await db.execute(
@@ -95,6 +103,8 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     logger.info("stripe_webhook_received", event_type=event_type, event_id=event_id)
 
     if event_type == "payment_intent.succeeded":
+        # This fires after capture (payment released to mechanic).
+        # Acts as redundant confirmation alongside the scheduler.
         intent = event["data"]["object"]
         intent_id = intent["id"]
         result = await db.execute(
@@ -102,7 +112,25 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         )
         booking = result.scalar_one_or_none()
         if booking:
-            logger.info("payment_intent_succeeded", booking_id=str(booking.id))
+            if booking.status == BookingStatus.VALIDATED:
+                booking.status = BookingStatus.COMPLETED
+                booking.payment_released_at = datetime.now(timezone.utc)
+                await db.flush()
+                logger.info("payment_captured_booking_completed", booking_id=str(booking.id))
+            else:
+                logger.info("payment_intent_succeeded", booking_id=str(booking.id), status=booking.status.value)
+
+    elif event_type == "payment_intent.amount_capturable_updated":
+        # This fires when the customer's card is authorized (hold placed).
+        # The booking can now proceed with mechanic acceptance.
+        intent = event["data"]["object"]
+        intent_id = intent["id"]
+        result = await db.execute(
+            select(Booking).where(Booking.stripe_payment_intent_id == intent_id)
+        )
+        booking = result.scalar_one_or_none()
+        if booking:
+            logger.info("payment_authorized", booking_id=str(booking.id), amount=intent.get("amount_capturable"))
 
     elif event_type == "payment_intent.payment_failed":
         intent = event["data"]["object"]
@@ -121,8 +149,60 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             await db.flush()
             logger.warning("payment_failed_booking_cancelled", booking_id=str(booking.id))
 
+    elif event_type == "payment_intent.canceled":
+        intent = event["data"]["object"]
+        intent_id = intent["id"]
+        result = await db.execute(
+            select(Booking)
+            .where(Booking.stripe_payment_intent_id == intent_id)
+            .options(selectinload(Booking.availability))
+        )
+        booking = result.scalar_one_or_none()
+        if booking and booking.status in (BookingStatus.PENDING_ACCEPTANCE, BookingStatus.CONFIRMED):
+            booking.status = BookingStatus.CANCELLED
+            booking.cancelled_at = datetime.now(timezone.utc)
+            if booking.availability:
+                booking.availability.is_booked = False
+            await db.flush()
+            logger.info("payment_canceled_booking_cancelled", booking_id=str(booking.id))
+
+    elif event_type == "charge.refund.created":
+        refund = event["data"]["object"]
+        intent_id = refund.get("payment_intent")
+        if intent_id:
+            result = await db.execute(
+                select(Booking).where(Booking.stripe_payment_intent_id == intent_id)
+            )
+            booking = result.scalar_one_or_none()
+            if booking:
+                logger.info("refund_created", booking_id=str(booking.id), amount=refund.get("amount"))
+
     elif event_type == "charge.dispute.created":
-        logger.warning("stripe_dispute_created", event_data=str(event["data"]["object"].get("id")))
+        dispute_obj = event["data"]["object"]
+        dispute_pi = dispute_obj.get("payment_intent")
+        if dispute_pi:
+            dispute_booking_result = await db.execute(
+                select(Booking).where(Booking.stripe_payment_intent_id == dispute_pi)
+            )
+            dispute_booking = dispute_booking_result.scalar_one_or_none()
+            logger.warning(
+                "stripe_dispute_created",
+                event_type=event_type,
+                booking_id=str(dispute_booking.id) if dispute_booking else None,
+                dispute_id=str(dispute_obj.get("id")),
+                dispute_reason=dispute_obj.get("reason"),
+                dispute_amount=dispute_obj.get("amount"),
+                dispute_currency=dispute_obj.get("currency"),
+            )
+        else:
+            logger.warning(
+                "stripe_dispute_created",
+                event_type=event_type,
+                dispute_id=str(dispute_obj.get("id")),
+                dispute_reason=dispute_obj.get("reason"),
+                dispute_amount=dispute_obj.get("amount"),
+                dispute_currency=dispute_obj.get("currency"),
+            )
 
     # Record event as processed for idempotency
     db.add(ProcessedWebhookEvent(event_id=event_id))

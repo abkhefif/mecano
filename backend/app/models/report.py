@@ -13,7 +13,7 @@ class Report(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
     booking_id: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("bookings.id"), unique=True, nullable=False
+        GUID(), ForeignKey("bookings.id", ondelete="CASCADE"), unique=True, nullable=False
     )
     pdf_url: Mapped[str] = mapped_column(String(500), nullable=False)
     generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -44,7 +44,7 @@ async def test_create_booking_success(
     data = response.json()
     assert data["booking"]["status"] == "pending_acceptance"
     assert data["booking"]["vehicle_brand"] == "Peugeot"
-    assert float(data["booking"]["base_price"]) == 50.0
+    assert float(data["booking"]["base_price"]) == 40.0
 
 
 @pytest.mark.asyncio
@@ -1518,7 +1518,7 @@ async def test_check_out_upload_error(
         )
 
     assert response.status_code == 400
-    assert "File type not allowed" in response.json()["detail"]
+    assert "Donnees invalides" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

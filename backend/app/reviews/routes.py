@@ -1,8 +1,9 @@
 import uuid
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,6 +15,7 @@ from app.models.mechanic_profile import MechanicProfile
 from app.models.review import Review
 from app.models.user import User
 from app.schemas.review import ReviewCreateRequest, ReviewResponse
+from app.utils.rate_limit import LIST_RATE_LIMIT, limiter
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -51,6 +53,11 @@ async def create_review(
 
     # Determine reviewer/reviewee and public flag
     if user.role == UserRole.BUYER and booking.buyer_id == user.id:
+        if not booking.mechanic:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot review: no mechanic assigned to this booking",
+            )
         reviewee_id = booking.mechanic.user_id
         is_public = True
     elif user.role == UserRole.MECHANIC:
@@ -74,7 +81,11 @@ async def create_review(
         is_public=is_public,
     )
     db.add(review)
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already reviewed this booking")
 
     # Update mechanic rating if public review
     if is_public:
@@ -101,26 +112,35 @@ async def create_review(
 
 
 @router.get("", response_model=list[ReviewResponse])
+@limiter.limit(LIST_RATE_LIMIT)
 async def list_reviews(
+    request: Request,
     mechanic_id: uuid.UUID = Query(...),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db),
 ):
-    """List public reviews for a mechanic."""
-    # Get the mechanic's user_id
-    profile_result = await db.execute(
-        select(MechanicProfile).where(MechanicProfile.id == mechanic_id)
-    )
-    profile = profile_result.scalar_one_or_none()
-    if not profile:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mechanic not found")
+    """List public reviews for a mechanic.
 
+    Uses a single JOIN query instead of two separate queries (one to look up
+    the mechanic profile, then another to fetch reviews) for better performance.
+    """
     result = await db.execute(
         select(Review)
-        .where(Review.reviewee_id == profile.user_id, Review.is_public == True)
+        .join(MechanicProfile, MechanicProfile.user_id == Review.reviewee_id)
+        .where(MechanicProfile.id == mechanic_id, Review.is_public == True)  # noqa: E712
         .order_by(Review.created_at.desc())
         .offset(offset)
         .limit(limit)
     )
-    return [ReviewResponse.model_validate(r) for r in result.scalars().all()]
+    reviews = result.scalars().all()
+
+    # If no reviews found, verify the mechanic exists to return a proper 404
+    if not reviews and offset == 0:
+        profile_result = await db.execute(
+            select(MechanicProfile.id).where(MechanicProfile.id == mechanic_id)
+        )
+        if not profile_result.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mechanic not found")
+
+    return [ReviewResponse.model_validate(r) for r in reviews]

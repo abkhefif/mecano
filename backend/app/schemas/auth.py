@@ -18,6 +18,7 @@ class RegisterRequest(BaseModel):
     first_name: str | None = Field(None, max_length=100)
     last_name: str | None = Field(None, max_length=100)
     phone: str | None = Field(None, pattern=r"^\+?[0-9]{10,15}$")
+    referral_code: str | None = None
 
     @field_validator("password")
     @classmethod
@@ -71,10 +72,36 @@ class MechanicProfileResponse(BaseModel):
     total_reviews: int
     is_identity_verified: bool
     has_cv: bool
+    has_obd_diagnostic: bool
+    photo_url: str | None = None
     is_active: bool
 
     model_config = {"from_attributes": True}
 
 
+class UserUpdateRequest(BaseModel):
+    email: EmailStr | None = None
+    first_name: str | None = Field(None, max_length=100)
+    last_name: str | None = Field(None, max_length=100)
+    # L-01: Add phone pattern validation matching RegisterRequest
+    phone: str | None = Field(None, pattern=r"^\+?[0-9]{10,15}$")
+
+
 class UserWithProfileResponse(UserResponse):
     mechanic_profile: MechanicProfileResponse | None = None
+
+
+class PushTokenRequest(BaseModel):
+    token: str = Field(max_length=100)
+
+
+class EmailVerifyRequest(BaseModel):
+    token: str
+
+
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str | None = None

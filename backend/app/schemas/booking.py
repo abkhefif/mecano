@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, time
 from decimal import Decimal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -37,9 +37,11 @@ class BookingCreateRequest(BaseModel):
             raise ValueError(f"vehicle_year must be at most {max_year}")
         return v
     vehicle_plate: str | None = Field(None, max_length=20)
+    obd_requested: bool = False
     meeting_address: str = Field(max_length=500)
     meeting_lat: float = Field(ge=-90, le=90)
     meeting_lng: float = Field(ge=-180, le=180)
+    slot_start_time: str | None = Field(None, pattern=r"^\d{2}:\d{2}$", description="Chosen sub-slot start time HH:MM within the availability window")
 
 
 class BookingResponse(BaseModel):
@@ -56,6 +58,7 @@ class BookingResponse(BaseModel):
     vehicle_plate: str | None
     meeting_address: str
     distance_km: float
+    obd_requested: bool
     base_price: Decimal
     travel_fees: Decimal
     total_price: Decimal
@@ -67,6 +70,9 @@ class BookingResponse(BaseModel):
     created_at: datetime
     confirmed_at: datetime | None
     cancelled_at: datetime | None
+    cancelled_by: str | None = None
+    refund_percentage: int | None = None
+    refund_amount: Decimal | None = None
 
     model_config = {"from_attributes": True}
 
@@ -85,6 +91,7 @@ class BookingBuyerResponse(BaseModel):
     vehicle_plate: str | None
     meeting_address: str
     distance_km: float
+    obd_requested: bool
     base_price: Decimal
     travel_fees: Decimal
     total_price: Decimal
@@ -94,6 +101,9 @@ class BookingBuyerResponse(BaseModel):
     created_at: datetime
     confirmed_at: datetime | None
     cancelled_at: datetime | None
+    cancelled_by: str | None = None
+    refund_percentage: int | None = None
+    refund_amount: Decimal | None = None
 
     model_config = {"from_attributes": True}
 
@@ -112,6 +122,7 @@ class BookingMechanicResponse(BaseModel):
     vehicle_plate: str | None
     meeting_address: str
     distance_km: float
+    obd_requested: bool
     base_price: Decimal
     travel_fees: Decimal
     mechanic_payout: Decimal
@@ -121,6 +132,9 @@ class BookingMechanicResponse(BaseModel):
     created_at: datetime
     confirmed_at: datetime | None
     cancelled_at: datetime | None
+    cancelled_by: str | None = None
+    refund_percentage: int | None = None
+    refund_amount: Decimal | None = None
 
     model_config = {"from_attributes": True}
 
@@ -132,6 +146,7 @@ class BookingCreateResponse(BaseModel):
 
 class RefuseRequest(BaseModel):
     reason: RefusalReason
+    proposed_time: str | None = Field(None, pattern=r"^\d{2}:\d{2}$", description="Alternative time HH:MM the mechanic proposes")
 
 
 class CheckInRequest(BaseModel):
@@ -141,6 +156,8 @@ class CheckInRequest(BaseModel):
 class CheckInResponse(BaseModel):
     check_in_code: str | None = None
     dispute_opened: bool = False
+    # H-01: Warning flag when mechanic GPS is near the meeting point during no-show report
+    mechanic_nearby_warning: bool = False
 
 
 class EnterCodeRequest(BaseModel):
@@ -163,7 +180,7 @@ class ChecklistInput(BaseModel):
 
 
 class CheckOutRequest(BaseModel):
-    entered_plate: str = Field(max_length=20)
+    entered_plate: str | None = Field(None, max_length=20)
     entered_odometer_km: int = Field(ge=0)
     gps_lat: float | None = Field(None, ge=-90, le=90)
     gps_lng: float | None = Field(None, ge=-180, le=180)
@@ -174,10 +191,15 @@ class CheckOutResponse(BaseModel):
     pdf_url: str
 
 
+class LocationUpdate(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+
+
 class ValidateRequest(BaseModel):
     validated: bool
     problem_reason: DisputeReason | None = None
-    problem_description: str | None = Field(None, max_length=500)
+    problem_description: str | None = Field(None, max_length=1000)
 
     @model_validator(mode="after")
     def check_dispute_fields(self):

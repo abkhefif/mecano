@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import get_db
+from app.models.blacklisted_token import BlacklistedToken
 from app.models.enums import UserRole
 from app.models.mechanic_profile import MechanicProfile
 from app.models.user import User
@@ -32,8 +33,8 @@ async def get_current_user(
             issuer="emecano",
             options={"verify_iss": True},
         )
-        # Only accept access tokens, not refresh tokens
-        if payload.get("type") not in (None, "access"):
+        # Only accept access tokens, not refresh or email_verify tokens
+        if payload.get("type") != "access":
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid authentication token",
@@ -44,6 +45,18 @@ async def get_current_user(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid authentication token",
             )
+
+        # C-03: Check if the token's jti has been blacklisted (logout)
+        jti = payload.get("jti")
+        if jti:
+            blacklisted = await db.execute(
+                select(BlacklistedToken).where(BlacklistedToken.jti == jti)
+            )
+            if blacklisted.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token has been revoked",
+                )
     except JWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,

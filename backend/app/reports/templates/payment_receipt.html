@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Helvetica Neue', Arial, sans-serif; color: #333; font-size: 14px; line-height: 1.5; }
+
+        .container { max-width: 800px; margin: 0 auto; padding: 30px; }
+
+        .header { text-align: center; margin-bottom: 20px; border-bottom: 3px solid #2563eb; padding-bottom: 15px; }
+        .header h1 { font-size: 28px; color: #2563eb; margin-bottom: 5px; }
+        .header .subtitle { color: #666; font-size: 13px; }
+
+        .receipt-title { text-align: center; margin: 25px 0; }
+        .receipt-title h2 { font-size: 22px; color: #111; }
+        .receipt-number { color: #666; font-size: 13px; margin-top: 5px; }
+
+        .section { margin: 20px 0; }
+        .section h2 { font-size: 18px; color: #2563eb; border-bottom: 1px solid #e5e7eb; padding-bottom: 5px; margin-bottom: 12px; }
+
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .info-item { display: flex; }
+        .info-label { font-weight: bold; min-width: 160px; color: #555; }
+        .info-value { color: #111; }
+
+        .price-table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+        .price-table th, .price-table td { padding: 10px 12px; text-align: left; border: 1px solid #e5e7eb; }
+        .price-table th { background: #f3f4f6; font-weight: bold; color: #555; }
+        .price-table .total-row { background: #eff6ff; font-weight: bold; font-size: 16px; }
+        .price-table .total-row td { border-top: 2px solid #2563eb; }
+
+        .payment-status { text-align: center; margin: 25px 0; padding: 15px; border-radius: 8px; }
+        .status-paid { background: #dcfce7; color: #166534; border: 2px solid #16a34a; }
+        .status-pending { background: #fef3c7; color: #92400e; border: 2px solid #d97706; }
+        .status-cancelled { background: #fef2f2; color: #991b1b; border: 2px solid #dc2626; }
+        .payment-status h3 { font-size: 18px; }
+
+        .footer { text-align: center; margin-top: 30px; padding-top: 15px; border-top: 1px solid #e5e7eb; color: #999; font-size: 11px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>eMecano</h1>
+            <div class="subtitle">Plateforme de mise en relation acheteurs - mecaniciens</div>
+        </div>
+
+        <div class="receipt-title">
+            <h2>Recu de paiement</h2>
+            <div class="receipt-number">N° EM-{{ receipt_number }}</div>
+        </div>
+
+        <div class="section">
+            <h2>Informations de la prestation</h2>
+            <div class="info-grid">
+                <div class="info-item">
+                    <span class="info-label">Date de service :</span>
+                    <span class="info-value">{{ service_date }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Ville du mecanicien :</span>
+                    <span class="info-value">{{ mechanic_city }}</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Vehicule inspecte</h2>
+            <div class="info-grid">
+                <div class="info-item">
+                    <span class="info-label">Marque :</span>
+                    <span class="info-value">{{ vehicle_brand }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Modele :</span>
+                    <span class="info-value">{{ vehicle_model }}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Annee :</span>
+                    <span class="info-value">{{ vehicle_year }}</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Detail du prix</h2>
+            <table class="price-table">
+                <thead>
+                    <tr><th>Description</th><th>Montant</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Inspection de base</td>
+                        <td>{{ base_price }} EUR</td>
+                    </tr>
+                    {% if obd_supplement %}
+                    <tr>
+                        <td>Supplement diagnostic OBD</td>
+                        <td>{{ obd_supplement }} EUR</td>
+                    </tr>
+                    {% endif %}
+                    {% if travel_fees and travel_fees != "0.00" %}
+                    <tr>
+                        <td>Frais de deplacement</td>
+                        <td>{{ travel_fees }} EUR</td>
+                    </tr>
+                    {% endif %}
+                    <tr class="total-row">
+                        <td>Total</td>
+                        <td>{{ total_price }} EUR</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="payment-status {{ payment_status_class }}">
+            <h3>{{ payment_status_label }}</h3>
+        </div>
+
+        <div class="footer">
+            Document genere automatiquement par eMecano
+        </div>
+    </div>
+</body>
+</html>

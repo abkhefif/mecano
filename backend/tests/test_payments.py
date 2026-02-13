@@ -56,6 +56,10 @@ async def test_onboard_mechanic_endpoint(
     mechanic_user: User,
     mechanic_profile: MechanicProfile,
 ):
+    # Clear stripe_account_id to test fresh onboarding
+    mechanic_profile.stripe_account_id = None
+    await db.flush()
+
     token = mechanic_token(mechanic_user)
     response = await client.post(
         "/payments/onboard-mechanic",
@@ -86,9 +90,13 @@ async def test_onboard_mechanic_already_has_account(
 @pytest.mark.asyncio
 async def test_mechanic_dashboard_no_account(
     client: AsyncClient,
+    db: AsyncSession,
     mechanic_user: User,
     mechanic_profile: MechanicProfile,
 ):
+    mechanic_profile.stripe_account_id = None
+    await db.flush()
+
     token = mechanic_token(mechanic_user)
     response = await client.get(
         "/payments/mechanic-dashboard",

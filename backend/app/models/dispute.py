@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -11,22 +11,29 @@ from app.models.types import GUID
 
 class DisputeCase(Base):
     __tablename__ = "dispute_cases"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('open', 'resolved_buyer', 'resolved_mechanic', 'closed')",
+            name="ck_dispute_cases_status_valid",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
     booking_id: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("bookings.id"), unique=True, nullable=False
+        GUID(), ForeignKey("bookings.id", ondelete="CASCADE"), unique=True, nullable=False
     )
     opened_by: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("users.id"), nullable=False
+        GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     reason: Mapped[DisputeReason] = mapped_column(String(20), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
+    photo_urls: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     status: Mapped[DisputeStatus] = mapped_column(
         String(20), nullable=False, default=DisputeStatus.OPEN
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_by_admin: Mapped[uuid.UUID | None] = mapped_column(
-        GUID(), ForeignKey("users.id"), nullable=True
+        GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
     )
     resolution_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

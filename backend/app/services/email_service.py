@@ -1,0 +1,104 @@
+"""Email verification service using Resend API.
+
+Generates JWT-based verification tokens and sends emails via Resend.
+In dev mode (no RESEND_API_KEY), logs a warning and skips sending.
+"""
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import httpx
+import structlog
+from jose import jwt
+
+from app.config import settings
+
+logger = structlog.get_logger()
+
+RESEND_API_URL = "https://api.resend.com/emails"
+
+
+def create_email_verification_token(email: str) -> str:
+    """Generate a JWT token for email verification (24h expiry)."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": email,
+        "exp": now + timedelta(hours=24),
+        "iat": now,
+        "iss": "emecano",
+        "type": "email_verify",
+        "jti": str(uuid.uuid4()),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_email_verification_token(token: str) -> str | None:
+    """Decode an email verification token and return the email, or None if invalid."""
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+            issuer="emecano",
+            options={"verify_iss": True},
+        )
+        if payload.get("type") != "email_verify":
+            return None
+        return payload.get("sub")
+    except Exception:
+        return None
+
+
+async def send_verification_email(email: str, token: str) -> bool:
+    """Send a verification email via Resend API.
+
+    If RESEND_API_KEY is not set, logs a warning and returns False (dev mode).
+    Returns True if the email was sent successfully.
+    """
+    if not settings.RESEND_API_KEY:
+        logger.warning(
+            "resend_api_key_not_set",
+            msg="RESEND_API_KEY not configured, skipping email send (dev mode)",
+            email=email,
+        )
+        return False
+
+    verification_link = f"{settings.FRONTEND_URL}/verify?token={token}"
+
+    payload = {
+        "from": "eMecano <noreply@emecano.fr>",
+        "to": [email],
+        "subject": "Verifiez votre adresse email - eMecano",
+        "html": (
+            "<h2>Bienvenue sur eMecano !</h2>"
+            "<p>Cliquez sur le lien ci-dessous pour verifier votre adresse email :</p>"
+            f'<p><a href="{verification_link}">Verifier mon email</a></p>'
+            "<p>Ce lien expire dans 24 heures.</p>"
+            "<p>Si vous n'avez pas cree de compte, ignorez cet email.</p>"
+        ),
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                RESEND_API_URL,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                logger.info("verification_email_sent", email=email)
+                return True
+            else:
+                logger.error(
+                    "verification_email_failed",
+                    email=email,
+                    status_code=response.status_code,
+                )
+                return False
+    except Exception as exc:
+        logger.error("verification_email_error", email=email, error=str(exc))
+        return False

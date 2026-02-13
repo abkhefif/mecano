@@ -12,10 +12,12 @@ def calculate_travel_fees(distance_km: float, free_zone_km: int) -> Decimal:
 
 
 def calculate_booking_pricing(
-    distance_km: float, free_zone_km: int
+    distance_km: float, free_zone_km: int, obd_requested: bool = False
 ) -> dict[str, Decimal]:
     """Calculate full booking pricing breakdown."""
     base_price = settings.BASE_INSPECTION_PRICE
+    if obd_requested:
+        base_price = base_price + settings.OBD_SUPPLEMENT
     travel_fees = calculate_travel_fees(distance_km, free_zone_km)
     total_price = base_price + travel_fees
     commission_rate = settings.PLATFORM_COMMISSION_RATE

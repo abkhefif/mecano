@@ -35,11 +35,15 @@ ALLOWED_TRANSITIONS: dict[BookingStatus, set[BookingStatus]] = {
 }
 
 
-def validate_transition(current: BookingStatus, new: BookingStatus) -> None:
+def validate_transition(current: BookingStatus, new: BookingStatus, action: str | None = None) -> None:
     """Validate a booking status transition. Raises HTTP 409 if invalid."""
     allowed = ALLOWED_TRANSITIONS.get(current, set())
     if new not in allowed:
+        if action:
+            detail = f"Cannot {action}: booking status is '{current.value}'"
+        else:
+            detail = f"Cannot transition from '{current.value}' to '{new.value}'"
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot transition from '{current.value}' to '{new.value}'",
+            detail=detail,
         )

@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from jose import JWTError, jwt
@@ -5,7 +6,8 @@ from passlib.context import CryptContext
 
 from app.config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# SEC-017: Explicitly set bcrypt rounds to prevent surprise changes if the library default shifts
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
 
 
 def hash_password(password: str) -> str:
@@ -19,14 +21,28 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 def create_access_token(user_id: str) -> str:
     now = datetime.now(timezone.utc)
     expire = now + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": user_id, "exp": expire, "iat": now, "iss": "emecano", "type": "access"}
+    payload = {
+        "sub": user_id,
+        "exp": expire,
+        "iat": now,
+        "iss": "emecano",
+        "type": "access",
+        "jti": str(uuid.uuid4()),  # SEC-008: unique token ID for future blacklist support
+    }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
 def create_refresh_token(user_id: str) -> str:
     now = datetime.now(timezone.utc)
     expire = now + timedelta(days=settings.JWT_REFRESH_TOKEN_EXPIRE_DAYS)
-    payload = {"sub": user_id, "exp": expire, "iat": now, "iss": "emecano", "type": "refresh"}
+    payload = {
+        "sub": user_id,
+        "exp": expire,
+        "iat": now,
+        "iss": "emecano",
+        "type": "refresh",
+        "jti": str(uuid.uuid4()),  # SEC-008: unique token ID for future blacklist support
+    }
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 

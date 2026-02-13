@@ -1,5 +1,5 @@
 import uuid
-from datetime import date, timedelta
+from datetime import date, time, timedelta
 
 import pytest
 from httpx import AsyncClient
@@ -15,6 +15,7 @@ from tests.conftest import auth_header, buyer_token, mechanic_token
 async def test_list_mechanics(
     client: AsyncClient,
     mechanic_profile: MechanicProfile,
+    availability: Availability,
 ):
     response = await client.get(
         "/mechanics",
@@ -281,6 +282,7 @@ async def test_list_mechanics_sorted_by_distance(
     db: AsyncSession,
     mechanic_user: User,
     mechanic_profile: MechanicProfile,
+    availability: Availability,
 ):
     """Test that mechanics are sorted by distance."""
     from app.auth.service import hash_password
@@ -309,6 +311,19 @@ async def test_list_mechanics_sorted_by_distance(
         is_active=True,
     )
     db.add(profile2)
+    await db.flush()
+
+    # Both mechanics need future availability slots to appear in search
+    tomorrow = date.today() + timedelta(days=1)
+    avail2 = Availability(
+        id=uuid.uuid4(),
+        mechanic_id=profile2.id,
+        date=tomorrow,
+        start_time=time(14, 0),
+        end_time=time(15, 0),
+        is_booked=False,
+    )
+    db.add(avail2)
     await db.flush()
 
     response = await client.get(

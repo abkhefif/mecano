@@ -1,9 +1,12 @@
 from collections.abc import AsyncGenerator
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
+
+logger = structlog.get_logger()
 
 engine = create_async_engine(
     settings.DATABASE_URL,
@@ -22,7 +25,12 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with async_session() as session:
         try:
             yield session
-            await session.commit()
+            try:
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                logger.exception("db_commit_failed")
+                raise
         except Exception:
             await session.rollback()
             raise

@@ -4,7 +4,7 @@ import pytest
 
 from app.services.pricing import calculate_booking_pricing, calculate_travel_fees
 from app.utils.code_generator import generate_check_in_code
-from app.utils.geo import calculate_distance_km, get_city_coords
+from app.utils.geo import calculate_distance_km
 
 
 class TestDistanceCalculation:
@@ -19,20 +19,6 @@ class TestDistanceCalculation:
     def test_short_distance(self):
         dist = calculate_distance_km(43.6047, 1.4442, 43.6100, 1.4500)
         assert dist < 1.0  # Less than 1 km
-
-
-class TestCityCoords:
-    def test_known_city(self):
-        coords = get_city_coords("toulouse")
-        assert coords is not None
-        assert abs(coords[0] - 43.6047) < 0.01
-
-    def test_known_city_case_insensitive(self):
-        coords = get_city_coords("TOULOUSE")
-        assert coords is not None
-
-    def test_unknown_city(self):
-        assert get_city_coords("nonexistent_city") is None
 
 
 class TestTravelFees:
@@ -60,20 +46,20 @@ class TestTravelFees:
 class TestBookingPricing:
     def test_no_travel_fees(self):
         pricing = calculate_booking_pricing(5.0, 10)
-        assert pricing["base_price"] == Decimal("50.00")
+        assert pricing["base_price"] == Decimal("40.00")
         assert pricing["travel_fees"] == Decimal("0.00")
-        assert pricing["total_price"] == Decimal("50.00")
-        assert pricing["commission_amount"] == Decimal("10.00")
-        assert pricing["mechanic_payout"] == Decimal("40.00")
+        assert pricing["total_price"] == Decimal("40.00")
+        assert pricing["commission_amount"] == Decimal("8.00")
+        assert pricing["mechanic_payout"] == Decimal("32.00")
 
     def test_with_travel_fees(self):
         pricing = calculate_booking_pricing(30.0, 10)
-        assert pricing["base_price"] == Decimal("50.00")
+        assert pricing["base_price"] == Decimal("40.00")
         assert pricing["travel_fees"] == Decimal("6.00")
-        assert pricing["total_price"] == Decimal("56.00")
+        assert pricing["total_price"] == Decimal("46.00")
         assert pricing["commission_rate"] == Decimal("0.20")
-        assert pricing["commission_amount"] == Decimal("11.20")
-        assert pricing["mechanic_payout"] == Decimal("44.80")
+        assert pricing["commission_amount"] == Decimal("9.20")
+        assert pricing["mechanic_payout"] == Decimal("36.80")
 
 
 class TestCodeGenerator:

@@ -6,6 +6,16 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from app.models.enums import VehicleType
 
 
+class DiplomaResponse(BaseModel):
+    id: uuid.UUID
+    name: str
+    year: int | None = None
+    document_url: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class MechanicUpdateRequest(BaseModel):
     city: str | None = Field(None, max_length=100)
     city_lat: float | None = Field(None, ge=-90, le=90)
@@ -13,6 +23,7 @@ class MechanicUpdateRequest(BaseModel):
     max_radius_km: int | None = Field(None, ge=10, le=50)
     free_zone_km: int | None = Field(None, ge=0, le=50)
     accepted_vehicle_types: list[VehicleType] | None = None
+    has_obd_diagnostic: bool | None = None
 
     @model_validator(mode="after")
     def free_zone_within_radius(self) -> "MechanicUpdateRequest":
@@ -34,7 +45,9 @@ class MechanicListItem(BaseModel):
     rating_avg: float
     total_reviews: int
     has_cv: bool
+    has_obd_diagnostic: bool
     is_identity_verified: bool
+    photo_url: str | None = None
     next_available_date: str | None = None
 
     model_config = {"from_attributes": True}
@@ -44,6 +57,7 @@ class MechanicDetailResponse(MechanicListItem):
     free_zone_km: int
     city_lat: float
     city_lng: float
+    cv_url: str | None = None
 
 
 class ReviewSummary(BaseModel):
@@ -72,6 +86,7 @@ class MechanicDetailWithSlots(BaseModel):
     profile: MechanicDetailResponse
     reviews: list[ReviewSummary]
     availabilities: list[AvailabilityResponse]
+    diplomas: list[DiplomaResponse] = []
 
 
 class AvailabilityCreateRequest(BaseModel):
