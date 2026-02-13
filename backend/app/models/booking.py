@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -16,6 +16,8 @@ class Booking(Base):
         CheckConstraint("base_price >= 0", name="ck_booking_base_price_positive"),
         CheckConstraint("total_price >= 0", name="ck_booking_total_price_positive"),
         CheckConstraint("commission_rate >= 0 AND commission_rate <= 1", name="ck_booking_commission_rate_range"),
+        Index("ix_booking_buyer_created", "buyer_id", "created_at"),
+        Index("ix_booking_mechanic_created", "mechanic_id", "created_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
@@ -79,17 +81,17 @@ class Booking(Base):
     mechanic: Mapped["MechanicProfile"] = relationship("MechanicProfile", lazy="raise")
     availability: Mapped["Availability | None"] = relationship("Availability", lazy="raise")
     validation_proof: Mapped["ValidationProof | None"] = relationship(
-        "ValidationProof", back_populates="booking", uselist=False, lazy="select"
+        "ValidationProof", back_populates="booking", uselist=False, lazy="raise"
     )
     inspection_checklist: Mapped["InspectionChecklist | None"] = relationship(
-        "InspectionChecklist", back_populates="booking", uselist=False, lazy="select"
+        "InspectionChecklist", back_populates="booking", uselist=False, lazy="raise"
     )
     report: Mapped["Report | None"] = relationship(
-        "Report", back_populates="booking", uselist=False, lazy="select"
+        "Report", back_populates="booking", uselist=False, lazy="raise"
     )
     dispute: Mapped["DisputeCase | None"] = relationship(
-        "DisputeCase", back_populates="booking", uselist=False, lazy="select"
+        "DisputeCase", back_populates="booking", uselist=False, lazy="raise"
     )
     reviews: Mapped[list["Review"]] = relationship(
-        "Review", back_populates="booking", lazy="select"
+        "Review", back_populates="booking", lazy="raise"
     )

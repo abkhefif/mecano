@@ -209,6 +209,31 @@ async def refresh_tokens(request: Request, body: RefreshRequest, db: AsyncSessio
             detail="Invalid or expired refresh token",
         )
 
+    # SEC-002: Check if the refresh token's jti has been blacklisted
+    try:
+        refresh_payload = jwt.decode(
+            body.refresh_token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+            issuer="emecano",
+            options={"verify_iss": True},
+        )
+        jti = refresh_payload.get("jti")
+        if jti:
+            blacklisted = await db.execute(
+                select(BlacklistedToken).where(BlacklistedToken.jti == jti)
+            )
+            if blacklisted.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token révoqué",
+                )
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired refresh token",
+        )
+
     # Verify user still exists
     result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
     user = result.scalar_one_or_none()
@@ -251,6 +276,8 @@ async def update_me(
     db: AsyncSession = Depends(get_db),
 ):
     """Update current user's personal information."""
+    # SEC-004: Only allow updating specific fields to prevent arbitrary attribute setting
+    UPDATABLE_FIELDS = {"email", "first_name", "last_name", "phone"}
     update_data = body.model_dump(exclude_unset=True)
 
     if "email" in update_data and update_data["email"] != user.email:
@@ -259,6 +286,8 @@ async def update_me(
             raise HTTPException(status_code=409, detail="Email already in use")
 
     for field, value in update_data.items():
+        if field not in UPDATABLE_FIELDS:
+            continue
         setattr(user, field, value)
 
     await db.flush()

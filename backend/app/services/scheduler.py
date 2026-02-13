@@ -123,27 +123,26 @@ async def check_pending_acceptances() -> None:
             try:
                 if booking.stripe_payment_intent_id:
                     await cancel_payment_intent(booking.stripe_payment_intent_id)
+
+                booking.status = BookingStatus.CANCELLED
+                booking.cancelled_at = datetime.now(timezone.utc)
+
+                if booking.availability:
+                    booking.availability.is_booked = False
+
+                await db.commit()
+                logger.info(
+                    "pending_acceptance_expired",
+                    booking_id=str(booking.id),
+                    mechanic_id=str(booking.mechanic_id),
+                )
             except Exception as e:
+                await db.rollback()
                 logger.exception(
-                    "pending_acceptance_cancel_stripe_failed",
+                    "pending_acceptance_cancel_failed",
                     booking_id=str(booking.id),
                     error_type=type(e).__name__,
                 )
-                continue  # Skip this booking, try next
-
-            booking.status = BookingStatus.CANCELLED
-            booking.cancelled_at = datetime.now(timezone.utc)
-
-            if booking.availability:
-                booking.availability.is_booked = False
-
-            logger.info(
-                "pending_acceptance_expired",
-                booking_id=str(booking.id),
-                mechanic_id=str(booking.mechanic_id),
-            )
-
-        await db.commit()
 
 
 async def _send_window_reminders(
@@ -164,6 +163,11 @@ async def _send_window_reminders(
     """
     flag_col = getattr(Booking, flag_field)
 
+    # PERF-005: Filter at the SQL level on availability date to avoid loading
+    # all confirmed bookings.  The window_start/window_end are datetimes, so we
+    # extract the date range to narrow the query.  Fine-grained start_time
+    # filtering is still done in Python because the slot datetime is
+    # constructed from separate date + time columns.
     result = await db.execute(
         select(Booking)
         .where(
@@ -171,6 +175,10 @@ async def _send_window_reminders(
             flag_col == False,  # noqa: E712
         )
         .join(Booking.availability)
+        .where(
+            Availability.date >= window_start.date(),
+            Availability.date <= window_end.date(),
+        )
         .options(
             selectinload(Booking.buyer),
             selectinload(Booking.mechanic).selectinload(MechanicProfile.user),
@@ -302,7 +310,7 @@ async def notify_unverified_mechanics() -> None:
             notif_result = await db.execute(
                 select(Notification).where(
                     Notification.user_id == profile.user_id,
-                    Notification.type == NotificationType.PROFILE_VERIFICATION.value,
+                    Notification.type == NotificationType.PROFILE_VERIFICATION,
                     Notification.created_at >= seven_days_ago,
                 )
             )
@@ -312,7 +320,7 @@ async def notify_unverified_mechanics() -> None:
             await create_notification(
                 db=db,
                 user_id=profile.user_id,
-                notification_type=NotificationType.PROFILE_VERIFICATION.value,
+                notification_type=NotificationType.PROFILE_VERIFICATION,
                 title="Verifiez votre profil",
                 body=(
                     "Verifiez votre profil pour gagner la confiance de vos clients "

@@ -52,7 +52,7 @@ class MechanicProfile(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
-    user: Mapped["User"] = relationship("User", back_populates="mechanic_profile", lazy="selectin")
+    user: Mapped["User"] = relationship("User", back_populates="mechanic_profile", lazy="raise")
     availabilities: Mapped[list["Availability"]] = relationship(
         "Availability", back_populates="mechanic", lazy="raise"
     )

@@ -384,7 +384,9 @@ async def create_booking(
 
 
 @router.patch("/{booking_id}/accept", response_model=BookingResponse)
+@limiter.limit("10/minute")
 async def accept_booking(
+    request: Request,
     booking_id: uuid.UUID,
     mechanic: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
     db: AsyncSession = Depends(get_db),
@@ -417,7 +419,9 @@ async def accept_booking(
 
 
 @router.patch("/{booking_id}/refuse", response_model=dict)
+@limiter.limit("10/minute")
 async def refuse_booking(
+    request: Request,
     booking_id: uuid.UUID,
     body: RefuseRequest,
     mechanic: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
@@ -477,7 +481,9 @@ async def refuse_booking(
 
 
 @router.patch("/{booking_id}/cancel", response_model=dict)
+@limiter.limit("10/minute")
 async def cancel_booking(
+    request: Request,
     booking_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -579,7 +585,9 @@ async def cancel_booking(
 
 
 @router.patch("/{booking_id}/check-in", response_model=CheckInResponse)
+@limiter.limit("10/minute")
 async def check_in(
+    request: Request,
     booking_id: uuid.UUID,
     body: CheckInRequest,
     buyer: User = Depends(get_current_buyer),
@@ -853,7 +861,9 @@ async def check_out(
 
 
 @router.patch("/{booking_id}/validate", response_model=dict)
+@limiter.limit("10/minute")
 async def validate_booking(
+    request: Request,
     booking_id: uuid.UUID,
     body: ValidateRequest,
     buyer: User = Depends(get_current_buyer),
@@ -907,7 +917,9 @@ async def validate_booking(
 
 
 @router.patch("/{booking_id}/validate-with-photos", response_model=dict)
+@limiter.limit("5/minute")
 async def validate_booking_with_photos(
+    request: Request,
     booking_id: uuid.UUID,
     validated: bool,
     problem_reason: str | None = None,
@@ -1045,7 +1057,7 @@ async def list_my_bookings(
             .where(Booking.buyer_id == user.id)
             .options(
                 selectinload(Booking.buyer),
-                selectinload(Booking.mechanic),
+                selectinload(Booking.mechanic).selectinload(MechanicProfile.user),
                 selectinload(Booking.availability),
                 selectinload(Booking.reviews),
             )
@@ -1059,7 +1071,7 @@ async def list_my_bookings(
             select(Booking)
             .options(
                 selectinload(Booking.buyer),
-                selectinload(Booking.mechanic),
+                selectinload(Booking.mechanic).selectinload(MechanicProfile.user),
                 selectinload(Booking.availability),
                 selectinload(Booking.reviews),
             )
@@ -1081,7 +1093,7 @@ async def list_my_bookings(
             .where(Booking.mechanic_id == profile.id)
             .options(
                 selectinload(Booking.buyer),
-                selectinload(Booking.mechanic),
+                selectinload(Booking.mechanic).selectinload(MechanicProfile.user),
                 selectinload(Booking.availability),
                 selectinload(Booking.reviews),
             )
@@ -1121,7 +1133,9 @@ async def get_booking(
 
 
 @router.patch("/{booking_id}/location")
+@limiter.limit("60/minute")
 async def update_location(
+    request: Request,
     booking_id: uuid.UUID,
     body: LocationUpdate,
     user: User = Depends(get_current_user),
@@ -1187,7 +1201,7 @@ async def get_location(
     if user.role != UserRole.ADMIN and booking.buyer_id != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
-    if not booking.mechanic_lat or not booking.mechanic_lng:
+    if booking.mechanic_lat is None or booking.mechanic_lng is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No location available")
 
     return {

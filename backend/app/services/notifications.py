@@ -19,33 +19,43 @@ async def send_email(to_email: str, subject: str, body: str) -> bool:
     return True
 
 
-async def send_push(user_id: str, title: str, body: str, data: dict | None = None) -> bool:
-    """Send a push notification via Expo Push API."""
+async def send_push(user_id: str, title: str, body: str, data: dict | None = None, db: AsyncSession | None = None) -> bool:
+    """Send a push notification via Expo Push API.
+
+    If a ``db`` session is provided it will be reused to look up the user's
+    push token; otherwise a new session is opened (backward-compatible).
+    """
     from app.models.user import User
 
+    async def _do_send(session: AsyncSession) -> bool:
+        result = await session.execute(select(User).where(User.id == uuid.UUID(user_id)))
+        user = result.scalar_one_or_none()
+        if not user or not user.expo_push_token:
+            logger.info("push_skip_no_token", user_id=user_id)
+            return False
+
+        payload = {
+            "to": user.expo_push_token,
+            "title": title,
+            "body": body,
+            "sound": "default",
+        }
+        if data:
+            payload["data"] = data
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(EXPO_PUSH_URL, json=payload)
+            response.raise_for_status()
+
+        logger.info("push_sent", user_id=user_id, title=title)
+        return True
+
     try:
-        async with async_session() as db:
-            result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
-            user = result.scalar_one_or_none()
-            if not user or not user.expo_push_token:
-                logger.info("push_skip_no_token", user_id=user_id)
-                return False
-
-            payload = {
-                "to": user.expo_push_token,
-                "title": title,
-                "body": body,
-                "sound": "default",
-            }
-            if data:
-                payload["data"] = data
-
-            async with httpx.AsyncClient() as client:
-                response = await client.post(EXPO_PUSH_URL, json=payload)
-                response.raise_for_status()
-
-            logger.info("push_sent", user_id=user_id, title=title)
-            return True
+        if db is not None:
+            return await _do_send(db)
+        else:
+            async with async_session() as new_db:
+                return await _do_send(new_db)
     except Exception as e:
         logger.error("push_error", user_id=user_id, error=str(e))
         return False
@@ -114,5 +124,5 @@ async def create_notification(
         data=data,
     )
     db.add(notification)
-    await send_push(str(user_id), title, body, data=data)
+    await send_push(str(user_id), title, body, data=data, db=db)
     return notification

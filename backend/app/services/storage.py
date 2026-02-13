@@ -120,8 +120,22 @@ async def upload_file(file: UploadFile, folder: str) -> str:
     return url
 
 
+MAX_FILE_BYTES_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
 async def upload_file_bytes(content: bytes, key: str, content_type: str) -> str:
-    """Upload raw bytes to R2/S3 and return the public URL."""
+    """Upload raw bytes to R2/S3 and return the public URL.
+
+    This function is intended for trusted, server-generated content only
+    (e.g., PDF reports). It does NOT validate magic bytes or content type.
+    Callers must ensure the content is safe before invoking this function.
+
+    Raises:
+        ValueError: If content exceeds the 10 MB size limit.
+    """
+    if len(content) > MAX_FILE_BYTES_SIZE:
+        raise ValueError(f"Content too large. Maximum size is {MAX_FILE_BYTES_SIZE // (1024 * 1024)} MB.")
+
     if not settings.R2_ENDPOINT_URL:
         mock_url = f"https://storage.emecano.dev/{key}"
         logger.info("file_upload_mock", key=key, url=mock_url)
