@@ -49,6 +49,62 @@ def decode_email_verification_token(token: str) -> str | None:
         return None
 
 
+async def send_password_reset_email(to_email: str, reset_token: str) -> bool:
+    """Send a password reset email via Resend API.
+
+    If RESEND_API_KEY is not set, logs a warning and returns False (dev mode).
+    Returns True if the email was sent successfully.
+    """
+    if not settings.RESEND_API_KEY:
+        logger.warning(
+            "resend_api_key_not_set",
+            msg="RESEND_API_KEY not configured, skipping email send (dev mode)",
+            email=to_email,
+        )
+        return False
+
+    reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token}"
+
+    payload = {
+        "from": "eMecano <noreply@emecano.fr>",
+        "to": [to_email],
+        "subject": "Reinitialisation de votre mot de passe - eMecano",
+        "html": (
+            "<h2>Reinitialisation de mot de passe</h2>"
+            "<p>Vous avez demande la reinitialisation de votre mot de passe.</p>"
+            "<p>Cliquez sur le lien ci-dessous pour definir un nouveau mot de passe :</p>"
+            f'<p><a href="{reset_link}">Reinitialiser mon mot de passe</a></p>'
+            "<p>Ce lien expire dans 1 heure.</p>"
+            "<p>Si vous n'avez pas fait cette demande, ignorez cet email.</p>"
+        ),
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                RESEND_API_URL,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                logger.info("password_reset_email_sent", email=to_email)
+                return True
+            else:
+                logger.error(
+                    "password_reset_email_failed",
+                    email=to_email,
+                    status_code=response.status_code,
+                )
+                return False
+    except Exception as exc:
+        logger.error("password_reset_email_error", email=to_email, error=str(exc))
+        return False
+
+
 async def send_verification_email(email: str, token: str) -> bool:
     """Send a verification email via Resend API.
 

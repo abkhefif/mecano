@@ -177,6 +177,43 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             if booking:
                 logger.info("refund_created", booking_id=str(booking.id), amount=refund.get("amount"))
 
+    elif event_type == "account.updated":
+        account_obj = event["data"]["object"]
+        account_id = account_obj.get("id")
+        charges_enabled = account_obj.get("charges_enabled", False)
+        payouts_enabled = account_obj.get("payouts_enabled", False)
+
+        if charges_enabled and payouts_enabled:
+            # Stripe Connect account is fully onboarded
+            result = await db.execute(
+                select(MechanicProfile).where(
+                    MechanicProfile.stripe_account_id == account_id
+                )
+            )
+            profile = result.scalar_one_or_none()
+            if profile:
+                # Check if MechanicProfile has a stripe_onboarded field; if so, update it
+                if hasattr(profile, "stripe_onboarded"):
+                    profile.stripe_onboarded = True
+                    await db.flush()
+                logger.info(
+                    "stripe_account_fully_onboarded",
+                    account_id=account_id,
+                    mechanic_profile_id=str(profile.id),
+                )
+            else:
+                logger.warning(
+                    "stripe_account_updated_no_profile",
+                    account_id=account_id,
+                )
+        else:
+            logger.info(
+                "stripe_account_updated_not_fully_onboarded",
+                account_id=account_id,
+                charges_enabled=charges_enabled,
+                payouts_enabled=payouts_enabled,
+            )
+
     elif event_type == "charge.dispute.created":
         dispute_obj = event["data"]["object"]
         dispute_pi = dispute_obj.get("payment_intent")

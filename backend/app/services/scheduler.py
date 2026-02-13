@@ -352,6 +352,42 @@ async def cleanup_expired_blacklisted_tokens() -> None:
             logger.info("blacklisted_tokens_cleaned_up", deleted_count=count)
 
 
+async def cleanup_old_notifications() -> None:
+    """Delete read notifications older than 90 days."""
+    async with async_session() as db:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=90)
+        result = await db.execute(
+            delete(Notification).where(
+                Notification.is_read == True,  # noqa: E712
+                Notification.created_at < cutoff,
+            )
+        )
+        count = result.rowcount
+        await db.commit()
+        if count:
+            logger.info("old_notifications_cleaned_up", deleted_count=count)
+
+
+async def cleanup_expired_push_tokens() -> None:
+    """Clear push tokens that haven't been used in over 6 months."""
+    async with async_session() as db:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=180)
+        result = await db.execute(
+            select(User).where(
+                User.expo_push_token.isnot(None),
+                User.updated_at < cutoff,
+            )
+        )
+        users = result.scalars().all()
+        cleared_count = 0
+        for user in users:
+            user.expo_push_token = None
+            cleared_count += 1
+        await db.commit()
+        if cleared_count:
+            logger.info("expired_push_tokens_cleared", cleared_count=cleared_count)
+
+
 async def reset_no_show_weekly() -> None:
     """L-07: Weekly cron job to reset no-show counters for eligible mechanics."""
     async with async_session() as db:
@@ -429,6 +465,25 @@ def start_scheduler() -> None:
         hour=5,
         minute=0,
         id="reset_no_show_weekly",
+        replace_existing=True,
+    )
+    # Data retention: clean up old read notifications (>90 days) daily at 3 AM
+    scheduler.add_job(
+        cleanup_old_notifications,
+        "cron",
+        hour=3,
+        minute=30,
+        id="cleanup_old_notifications",
+        replace_existing=True,
+    )
+    # Data retention: clean up expired push tokens (>6 months unused) weekly
+    scheduler.add_job(
+        cleanup_expired_push_tokens,
+        "cron",
+        day_of_week="sun",
+        hour=4,
+        minute=0,
+        id="cleanup_expired_push_tokens",
         replace_existing=True,
     )
     scheduler.start()

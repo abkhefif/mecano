@@ -61,3 +61,38 @@ def decode_refresh_token(token: str) -> str | None:
         return payload.get("sub")
     except JWTError:
         return None
+
+
+def create_password_reset_token(user_id: str) -> str:
+    """Generate a JWT token for password reset (1h expiry)."""
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(hours=1)
+    payload = {
+        "sub": user_id,
+        "exp": expire,
+        "iat": now,
+        "iss": "emecano",
+        "type": "password_reset",
+        "jti": str(uuid.uuid4()),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+
+
+def decode_password_reset_token(token: str) -> dict | None:
+    """Decode a password reset token and return the full payload, or None if invalid.
+
+    Returns a dict with 'sub' (user_id) and 'jti' keys on success.
+    """
+    try:
+        payload = jwt.decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+            issuer="emecano",
+            options={"verify_iss": True},
+        )
+        if payload.get("type") != "password_reset":
+            return None
+        return payload
+    except JWTError:
+        return None

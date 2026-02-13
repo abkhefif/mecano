@@ -2,6 +2,7 @@
 # dispute resolution, and platform analytics. Currently there is no admin API —
 # all administrative operations require direct database access.
 
+import uuid as _uuid
 from contextlib import asynccontextmanager
 
 import sentry_sdk
@@ -118,6 +119,20 @@ else:
 
 if settings.is_production:
     app.add_middleware(SecurityHeadersMiddleware)
+
+
+@app.middleware("http")
+async def request_id_middleware(request: Request, call_next):
+    """Attach a unique request ID to every request for tracing."""
+    request_id = request.headers.get("X-Request-ID") or str(_uuid.uuid4())
+    structlog.contextvars.bind_contextvars(request_id=request_id)
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+    finally:
+        structlog.contextvars.clear_contextvars()
+
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(mechanics_router, prefix="/mechanics", tags=["mechanics"])

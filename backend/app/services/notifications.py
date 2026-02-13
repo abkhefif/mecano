@@ -5,6 +5,7 @@ import structlog
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.database import async_session
 
 logger = structlog.get_logger()
@@ -13,10 +14,41 @@ EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 
 
 async def send_email(to_email: str, subject: str, body: str) -> bool:
-    """Send an email. Currently logs only -- plug in Resend/SMTP later."""
-    logger.info("email_send", to=to_email, subject=subject, body_preview=body[:100])
-    # TODO: Integrate Resend or SMTP service
-    return True
+    """Send an email via Resend API.
+
+    If RESEND_API_KEY is not configured, gracefully logs and returns True (dev mode).
+    """
+    if not settings.RESEND_API_KEY:
+        logger.info("email_send_dev_mode", to=to_email, subject=subject, body_preview=body[:100])
+        return True
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+                json={
+                    "from": "eMecano <noreply@emecano.fr>",
+                    "to": [to_email],
+                    "subject": subject,
+                    "html": body,
+                },
+                timeout=10.0,
+            )
+            if response.status_code == 200:
+                logger.info("email_sent", to=to_email, subject=subject)
+                return True
+            else:
+                logger.error(
+                    "email_send_failed",
+                    to=to_email,
+                    subject=subject,
+                    status_code=response.status_code,
+                )
+                return False
+    except Exception as exc:
+        logger.error("email_send_error", to=to_email, subject=subject, error=str(exc))
+        return False
 
 
 async def send_push(user_id: str, title: str, body: str, data: dict | None = None, db: AsyncSession | None = None) -> bool:
@@ -46,6 +78,34 @@ async def send_push(user_id: str, title: str, body: str, data: dict | None = Non
         async with httpx.AsyncClient() as client:
             response = await client.post(EXPO_PUSH_URL, json=payload)
             response.raise_for_status()
+
+        # Parse response to check for push token errors
+        try:
+            resp_data = response.json()
+            if isinstance(resp_data, dict) and "data" in resp_data:
+                ticket = resp_data["data"]
+                # Expo returns a single ticket object when sending to one token
+                if isinstance(ticket, dict):
+                    ticket_status = ticket.get("status")
+                    if ticket_status == "error":
+                        error_detail = ticket.get("details", {})
+                        error_code = error_detail.get("error") if isinstance(error_detail, dict) else None
+                        if error_code == "DeviceNotRegistered":
+                            logger.warning(
+                                "push_token_invalid",
+                                user_id=user_id,
+                                token=user.expo_push_token,
+                                error="DeviceNotRegistered",
+                            )
+                        else:
+                            logger.warning(
+                                "push_ticket_error",
+                                user_id=user_id,
+                                message=ticket.get("message"),
+                            )
+        except Exception:
+            # Don't fail the overall operation if receipt parsing fails
+            logger.debug("push_receipt_parse_skipped", user_id=user_id)
 
         logger.info("push_sent", user_id=user_id, title=title)
         return True
