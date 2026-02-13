@@ -14,8 +14,8 @@ services:
     name: emecano-api
     runtime: docker
     plan: free
-    dockerfilePath: ./Dockerfile
-    dockerContext: .
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
     healthCheckPath: /health
     buildFilter:
       paths:
