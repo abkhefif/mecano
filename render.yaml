@@ -9,6 +9,7 @@ services:
     name: emecano-redis
     plan: free
     maxmemoryPolicy: allkeys-lru
+    ipAllowList: []
 
   - type: web
     name: emecano-api
