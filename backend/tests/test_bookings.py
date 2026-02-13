@@ -1716,3 +1716,613 @@ async def test_list_my_bookings_mechanic_no_profile(
     response = await client.get("/bookings/me", headers=auth_header(token))
     assert response.status_code == 200
     assert response.json() == []
+
+
+# ---- Cancellation refund policy tests ----
+
+
+@pytest.mark.asyncio
+async def test_cancel_booking_full_refund_more_than_24h(
+    client: AsyncClient,
+    db: AsyncSession,
+    buyer_user: User,
+    mechanic_user: User,
+    mechanic_profile: MechanicProfile,
+):
+    """Cancel >24h before appointment -> 100% refund."""
+    # Create an availability slot 3 days in the future (well over 24h)
+    future_date = date.today() + timedelta(days=3)
+    avail = Availability(
+        id=uuid.uuid4(),
+        mechanic_id=mechanic_profile.id,
+        date=future_date,
+        start_time=time(14, 0),
+        end_time=time(14, 30),
+        is_booked=True,
+    )
+    db.add(avail)
+    await db.flush()
+
+    booking = Booking(
+        id=uuid.uuid4(),
+        buyer_id=buyer_user.id,
+        mechanic_id=mechanic_profile.id,
+        availability_id=avail.id,
+        status=BookingStatus.CONFIRMED,
+        vehicle_type=VehicleType.CAR,
+        vehicle_brand="Peugeot",
+        vehicle_model="308",
+        vehicle_year=2019,
+        meeting_address="Toulouse",
+        meeting_lat=43.61,
+        meeting_lng=1.45,
+        distance_km=5.0,
+        base_price=Decimal("40.00"),
+        travel_fees=Decimal("0.00"),
+        total_price=Decimal("40.00"),
+        commission_rate=Decimal("0.20"),
+        commission_amount=Decimal("8.00"),
+        mechanic_payout=Decimal("32.00"),
+        stripe_payment_intent_id="pi_full_refund_test",
+    )
+    db.add(booking)
+    await db.flush()
+
+    token = buyer_token(buyer_user)
+    with patch("app.bookings.routes.cancel_payment_intent", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.bookings.routes.create_notification", new_callable=AsyncMock):
+        response = await client.patch(
+            f"/bookings/{booking.id}/cancel",
+            headers=auth_header(token),
+        )
+        mock_cancel.assert_called_once_with("pi_full_refund_test")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "cancelled"
+    assert data["cancelled_by"] == "buyer"
+    assert data["refund_percentage"] == 100
+    assert data["refund_amount"] == "40.00"
+
+
+@pytest.mark.asyncio
+async def test_cancel_booking_partial_refund_12_to_24h(
+    client: AsyncClient,
+    db: AsyncSession,
+    buyer_user: User,
+    mechanic_user: User,
+    mechanic_profile: MechanicProfile,
+):
+    """Cancel between 12-24h before appointment -> 50% refund."""
+    # Set appointment to 18 hours from now (between 12 and 24)
+    now = datetime.now(timezone.utc)
+    appointment_dt = now + timedelta(hours=18)
+    avail = Availability(
+        id=uuid.uuid4(),
+        mechanic_id=mechanic_profile.id,
+        date=appointment_dt.date(),
+        start_time=appointment_dt.time(),
+        end_time=(appointment_dt + timedelta(minutes=30)).time(),
+        is_booked=True,
+    )
+    db.add(avail)
+    await db.flush()
+
+    booking = Booking(
+        id=uuid.uuid4(),
+        buyer_id=buyer_user.id,
+        mechanic_id=mechanic_profile.id,
+        availability_id=avail.id,
+        status=BookingStatus.CONFIRMED,
+        vehicle_type=VehicleType.CAR,
+        vehicle_brand="Renault",
+        vehicle_model="Clio",
+        vehicle_year=2020,
+        meeting_address="Toulouse",
+        meeting_lat=43.61,
+        meeting_lng=1.45,
+        distance_km=5.0,
+        base_price=Decimal("40.00"),
+        travel_fees=Decimal("10.00"),
+        total_price=Decimal("50.00"),
+        commission_rate=Decimal("0.20"),
+        commission_amount=Decimal("10.00"),
+        mechanic_payout=Decimal("40.00"),
+        stripe_payment_intent_id="pi_partial_refund_test",
+    )
+    db.add(booking)
+    await db.flush()
+
+    token = buyer_token(buyer_user)
+    with patch("app.bookings.routes.refund_payment_intent", new_callable=AsyncMock) as mock_refund, \
+         patch("app.bookings.routes.create_notification", new_callable=AsyncMock):
+        response = await client.patch(
+            f"/bookings/{booking.id}/cancel",
+            headers=auth_header(token),
+        )
+        # 50% of 50.00 = 25.00 -> 2500 cents
+        mock_refund.assert_called_once_with("pi_partial_refund_test", amount_cents=2500)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "cancelled"
+    assert data["cancelled_by"] == "buyer"
+    assert data["refund_percentage"] == 50
+    assert data["refund_amount"] == "25.00"
+
+
+@pytest.mark.asyncio
+async def test_cancel_booking_no_refund_less_than_12h(
+    client: AsyncClient,
+    db: AsyncSession,
+    buyer_user: User,
+    mechanic_user: User,
+    mechanic_profile: MechanicProfile,
+):
+    """Cancel <12h before appointment -> 0% refund."""
+    # Set appointment to 6 hours from now (less than 12h)
+    now = datetime.now(timezone.utc)
+    appointment_dt = now + timedelta(hours=6)
+    avail = Availability(
+        id=uuid.uuid4(),
+        mechanic_id=mechanic_profile.id,
+        date=appointment_dt.date(),
+        start_time=appointment_dt.time(),
+        end_time=(appointment_dt + timedelta(minutes=30)).time(),
+        is_booked=True,
+    )
+    db.add(avail)
+    await db.flush()
+
+    booking = Booking(
+        id=uuid.uuid4(),
+        buyer_id=buyer_user.id,
+        mechanic_id=mechanic_profile.id,
+        availability_id=avail.id,
+        status=BookingStatus.CONFIRMED,
+        vehicle_type=VehicleType.CAR,
+        vehicle_brand="Citroen",
+        vehicle_model="C3",
+        vehicle_year=2018,
+        meeting_address="Toulouse",
+        meeting_lat=43.61,
+        meeting_lng=1.45,
+        distance_km=5.0,
+        base_price=Decimal("40.00"),
+        travel_fees=Decimal("0.00"),
+        total_price=Decimal("40.00"),
+        commission_rate=Decimal("0.20"),
+        commission_amount=Decimal("8.00"),
+        mechanic_payout=Decimal("32.00"),
+        stripe_payment_intent_id="pi_no_refund_test",
+    )
+    db.add(booking)
+    await db.flush()
+
+    token = buyer_token(buyer_user)
+    with patch("app.bookings.routes.cancel_payment_intent", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.bookings.routes.refund_payment_intent", new_callable=AsyncMock) as mock_refund, \
+         patch("app.bookings.routes.create_notification", new_callable=AsyncMock):
+        response = await client.patch(
+            f"/bookings/{booking.id}/cancel",
+            headers=auth_header(token),
+        )
+        # No Stripe action should be taken for 0% refund
+        mock_cancel.assert_not_called()
+        mock_refund.assert_not_called()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "cancelled"
+    assert data["cancelled_by"] == "buyer"
+    assert data["refund_percentage"] == 0
+    assert data["refund_amount"] == "0.00"
+
+
+@pytest.mark.asyncio
+async def test_cancel_booking_no_availability_defaults_full_refund(
+    client: AsyncClient,
+    db: AsyncSession,
+    buyer_user: User,
+    mechanic_user: User,
+    mechanic_profile: MechanicProfile,
+):
+    """Cancel a booking with no linked availability -> defaults to 100% refund."""
+    booking = Booking(
+        id=uuid.uuid4(),
+        buyer_id=buyer_user.id,
+        mechanic_id=mechanic_profile.id,
+        availability_id=None,
+        status=BookingStatus.CONFIRMED,
+        vehicle_type=VehicleType.CAR,
+        vehicle_brand="Fiat",
+        vehicle_model="500",
+        vehicle_year=2021,
+        meeting_address="Toulouse",
+        meeting_lat=43.61,
+        meeting_lng=1.45,
+        distance_km=5.0,
+        base_price=Decimal("40.00"),
+        travel_fees=Decimal("0.00"),
+        total_price=Decimal("40.00"),
+        commission_rate=Decimal("0.20"),
+        commission_amount=Decimal("8.00"),
+        mechanic_payout=Decimal("32.00"),
+        stripe_payment_intent_id="pi_no_avail_test",
+    )
+    db.add(booking)
+    await db.flush()
+
+    token = buyer_token(buyer_user)
+    with patch("app.bookings.routes.cancel_payment_intent", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.bookings.routes.create_notification", new_callable=AsyncMock):
+        response = await client.patch(
+            f"/bookings/{booking.id}/cancel",
+            headers=auth_header(token),
+        )
+        # Full refund when no availability to calculate time from
+        mock_cancel.assert_called_once_with("pi_no_avail_test")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "cancelled"
+    assert data["cancelled_by"] == "buyer"
+    assert data["refund_percentage"] == 100
+    assert data["refund_amount"] == "40.00"
+
+
+@pytest.mark.asyncio
+async def test_cancel_booking_mechanic_always_full_refund(
+    client: AsyncClient,
+    db: AsyncSession,
+    buyer_user: User,
+    mechanic_user: User,
+    mechanic_profile: MechanicProfile,
+):
+    """Mechanic-initiated cancellation always gives 100% refund regardless of timing."""
+    # Set appointment to 6 hours from now -- would be 0% for buyer, but mechanic = 100%
+    now = datetime.now(timezone.utc)
+    appointment_dt = now + timedelta(hours=6)
+    avail = Availability(
+        id=uuid.uuid4(),
+        mechanic_id=mechanic_profile.id,
+        date=appointment_dt.date(),
+        start_time=appointment_dt.time(),
+        end_time=(appointment_dt + timedelta(minutes=30)).time(),
+        is_booked=True,
+    )
+    db.add(avail)
+    await db.flush()
+
+    booking = Booking(
+        id=uuid.uuid4(),
+        buyer_id=buyer_user.id,
+        mechanic_id=mechanic_profile.id,
+        availability_id=avail.id,
+        status=BookingStatus.CONFIRMED,
+        vehicle_type=VehicleType.CAR,
+        vehicle_brand="Toyota",
+        vehicle_model="Yaris",
+        vehicle_year=2022,
+        meeting_address="Toulouse",
+        meeting_lat=43.61,
+        meeting_lng=1.45,
+        distance_km=5.0,
+        base_price=Decimal("40.00"),
+        travel_fees=Decimal("0.00"),
+        total_price=Decimal("40.00"),
+        commission_rate=Decimal("0.20"),
+        commission_amount=Decimal("8.00"),
+        mechanic_payout=Decimal("32.00"),
+        stripe_payment_intent_id="pi_mech_cancel_test",
+    )
+    db.add(booking)
+    await db.flush()
+
+    token = mechanic_token(mechanic_user)
+    with patch("app.bookings.routes.cancel_payment_intent", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.bookings.routes.create_notification", new_callable=AsyncMock):
+        response = await client.patch(
+            f"/bookings/{booking.id}/cancel",
+            headers=auth_header(token),
+        )
+        mock_cancel.assert_called_once_with("pi_mech_cancel_test")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "cancelled"
+    assert data["cancelled_by"] == "mechanic"
+    assert data["refund_percentage"] == 100
+    assert data["refund_amount"] == "40.00"
+
+
+# ---- Availability slot splitting tests ----
+
+
+@pytest.mark.asyncio
+async def test_create_booking_slot_exact_match_no_split(
+    client: AsyncClient,
+    db: AsyncSession,
+    buyer_user: User,
+    mechanic_profile: MechanicProfile,
+):
+    """Booking with slot_start_time that exactly matches the availability -> no split."""
+    tomorrow = date.today() + timedelta(days=1)
+    avail = Availability(
+        id=uuid.uuid4(),
+        mechanic_id=mechanic_profile.id,
+        date=tomorrow,
+        start_time=time(10, 0),
+        end_time=time(10, 30),
+        is_booked=False,
+    )
+    db.add(avail)
+    await db.flush()
+    original_avail_id = avail.id
+
+    token = buyer_token(buyer_user)
+    response = await client.post(
+        "/bookings",
+        json={
+            "mechanic_id": str(mechanic_profile.id),
+            "availability_id": str(avail.id),
+            "vehicle_type": "car",
+            "vehicle_brand": "Peugeot",
+            "vehicle_model": "308",
+            "vehicle_year": 2019,
+            "meeting_address": "123 Rue Test, Toulouse",
+            "meeting_lat": 43.6100,
+            "meeting_lng": 1.4500,
+            "slot_start_time": "10:00",
+        },
+        headers=auth_header(token),
+    )
+    assert response.status_code == 201
+
+    # Original slot should still exist (exact match, no split) and be marked booked
+    from sqlalchemy import select as sa_select
+    result = await db.execute(
+        sa_select(Availability).where(Availability.id == original_avail_id)
+    )
+    original = result.scalar_one_or_none()
+    assert original is not None
+    assert original.is_booked is True
+
+    # No additional availability slots should have been created
+    all_avails = await db.execute(
+        sa_select(Availability).where(
+            Availability.mechanic_id == mechanic_profile.id,
+            Availability.date == tomorrow,
+        )
+    )
+    slots = all_avails.scalars().all()
+    assert len(slots) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_booking_slot_split_left_piece_remaining(
+    client: AsyncClient,
+    db: AsyncSession,
+    buyer_user: User,
+    mechanic_profile: MechanicProfile,
+):
+    """Booking the last 30min of a 2h slot -> left piece remains free after buffer trimming."""
+    # Use a 2-hour window so the left piece is large enough to survive the
+    # 15-minute buffer zone that blocks adjacent slots.
+    tomorrow = date.today() + timedelta(days=1)
+    avail = Availability(
+        id=uuid.uuid4(),
+        mechanic_id=mechanic_profile.id,
+        date=tomorrow,
+        start_time=time(10, 0),
+        end_time=time(12, 0),
+        is_booked=False,
+    )
+    db.add(avail)
+    await db.flush()
+    original_avail_id = avail.id
+
+    token = buyer_token(buyer_user)
+    response = await client.post(
+        "/bookings",
+        json={
+            "mechanic_id": str(mechanic_profile.id),
+            "availability_id": str(avail.id),
+            "vehicle_type": "car",
+            "vehicle_brand": "Renault",
+            "vehicle_model": "Megane",
+            "vehicle_year": 2020,
+            "meeting_address": "456 Rue Test, Toulouse",
+            "meeting_lat": 43.6100,
+            "meeting_lng": 1.4500,
+            "slot_start_time": "11:30",
+        },
+        headers=auth_header(token),
+    )
+    assert response.status_code == 201
+
+    from sqlalchemy import select as sa_select
+    # The original big slot should have been deleted (replaced by split pieces)
+    result = await db.execute(
+        sa_select(Availability).where(Availability.id == original_avail_id)
+    )
+    assert result.scalar_one_or_none() is None
+
+    # We should have: the left piece (10:00-11:30, trimmed by buffer) + booked sub-slot (11:30-12:00)
+    all_avails = await db.execute(
+        sa_select(Availability).where(
+            Availability.mechanic_id == mechanic_profile.id,
+            Availability.date == tomorrow,
+        )
+    )
+    slots = all_avails.scalars().all()
+
+    booked_slots = [s for s in slots if s.is_booked]
+    free_slots = [s for s in slots if not s.is_booked]
+
+    # At least 1 booked slot (the booking itself)
+    assert len(booked_slots) >= 1
+    # The left piece should survive (trimmed to 10:00-11:15 by the 15-min buffer)
+    assert len(free_slots) >= 1
+
+    # Verify the booked sub-slot
+    booked_sub = [s for s in booked_slots if s.start_time == time(11, 30)]
+    assert len(booked_sub) == 1
+    assert booked_sub[0].end_time == time(12, 0)
+
+    # Verify the left piece starts at the original start
+    left = [s for s in free_slots if s.start_time == time(10, 0)]
+    assert len(left) == 1
+    # Buffer trims end from 11:30 to 11:15
+    assert left[0].end_time == time(11, 15)
+
+
+@pytest.mark.asyncio
+async def test_create_booking_slot_split_right_piece_remaining(
+    client: AsyncClient,
+    db: AsyncSession,
+    buyer_user: User,
+    mechanic_profile: MechanicProfile,
+):
+    """Booking the first 30min of a 2h slot -> right piece remains free after buffer trimming."""
+    tomorrow = date.today() + timedelta(days=1)
+    avail = Availability(
+        id=uuid.uuid4(),
+        mechanic_id=mechanic_profile.id,
+        date=tomorrow,
+        start_time=time(14, 0),
+        end_time=time(16, 0),
+        is_booked=False,
+    )
+    db.add(avail)
+    await db.flush()
+    original_avail_id = avail.id
+
+    token = buyer_token(buyer_user)
+    response = await client.post(
+        "/bookings",
+        json={
+            "mechanic_id": str(mechanic_profile.id),
+            "availability_id": str(avail.id),
+            "vehicle_type": "car",
+            "vehicle_brand": "Citroen",
+            "vehicle_model": "C4",
+            "vehicle_year": 2021,
+            "meeting_address": "789 Rue Test, Toulouse",
+            "meeting_lat": 43.6100,
+            "meeting_lng": 1.4500,
+            "slot_start_time": "14:00",
+        },
+        headers=auth_header(token),
+    )
+    assert response.status_code == 201
+
+    from sqlalchemy import select as sa_select
+    # Original big slot should be deleted
+    result = await db.execute(
+        sa_select(Availability).where(Availability.id == original_avail_id)
+    )
+    assert result.scalar_one_or_none() is None
+
+    all_avails = await db.execute(
+        sa_select(Availability).where(
+            Availability.mechanic_id == mechanic_profile.id,
+            Availability.date == tomorrow,
+        )
+    )
+    slots = all_avails.scalars().all()
+
+    booked_slots = [s for s in slots if s.is_booked]
+    free_slots = [s for s in slots if not s.is_booked]
+
+    # Booked sub-slot: 14:00-14:30
+    booked_sub = [s for s in booked_slots if s.start_time == time(14, 0)]
+    assert len(booked_sub) == 1
+    assert booked_sub[0].end_time == time(14, 30)
+
+    # Right piece survives buffer trimming (trimmed start from 14:30 to 14:45)
+    assert len(free_slots) >= 1
+    right = [s for s in free_slots if s.end_time == time(16, 0)]
+    assert len(right) == 1
+    # Buffer trims start from 14:30 to 14:45
+    assert right[0].start_time == time(14, 45)
+
+
+@pytest.mark.asyncio
+async def test_create_booking_slot_split_middle_both_pieces(
+    client: AsyncClient,
+    db: AsyncSession,
+    buyer_user: User,
+    mechanic_profile: MechanicProfile,
+):
+    """Booking the middle 30min of a 3h slot -> left and right pieces remain after buffer trimming."""
+    # Use a 3-hour window so both left and right pieces are large enough
+    # to survive the 15-minute buffer zone.
+    tomorrow = date.today() + timedelta(days=1)
+    avail = Availability(
+        id=uuid.uuid4(),
+        mechanic_id=mechanic_profile.id,
+        date=tomorrow,
+        start_time=time(9, 0),
+        end_time=time(12, 0),
+        is_booked=False,
+    )
+    db.add(avail)
+    await db.flush()
+    original_avail_id = avail.id
+
+    token = buyer_token(buyer_user)
+    response = await client.post(
+        "/bookings",
+        json={
+            "mechanic_id": str(mechanic_profile.id),
+            "availability_id": str(avail.id),
+            "vehicle_type": "car",
+            "vehicle_brand": "BMW",
+            "vehicle_model": "Serie 3",
+            "vehicle_year": 2018,
+            "meeting_address": "101 Avenue Test, Toulouse",
+            "meeting_lat": 43.6100,
+            "meeting_lng": 1.4500,
+            "slot_start_time": "10:30",
+        },
+        headers=auth_header(token),
+    )
+    assert response.status_code == 201
+
+    from sqlalchemy import select as sa_select
+    # Original big slot should be deleted
+    result = await db.execute(
+        sa_select(Availability).where(Availability.id == original_avail_id)
+    )
+    assert result.scalar_one_or_none() is None
+
+    # Expected pieces after split + buffer trimming:
+    #   Left piece:  9:00 -> 10:30, trimmed by buffer to 9:00 -> 10:15
+    #   Booked slot: 10:30 -> 11:00
+    #   Right piece: 11:00 -> 12:00, trimmed by buffer to 11:15 -> 12:00
+    all_avails = await db.execute(
+        sa_select(Availability).where(
+            Availability.mechanic_id == mechanic_profile.id,
+            Availability.date == tomorrow,
+        )
+    )
+    slots = all_avails.scalars().all()
+    assert len(slots) == 3
+
+    booked_slots = [s for s in slots if s.is_booked]
+    free_slots = sorted([s for s in slots if not s.is_booked], key=lambda s: s.start_time)
+    assert len(booked_slots) == 1
+    assert len(free_slots) == 2
+
+    # Booked sub-slot: 10:30-11:00
+    assert booked_slots[0].start_time == time(10, 30)
+    assert booked_slots[0].end_time == time(11, 0)
+
+    # Left piece: 9:00, trimmed end to 10:15 (buffer removes 15min before booking)
+    assert free_slots[0].start_time == time(9, 0)
+    assert free_slots[0].end_time == time(10, 15)
+
+    # Right piece: trimmed start to 11:15 (buffer removes 15min after booking), ends at 12:00
+    assert free_slots[1].start_time == time(11, 15)
+    assert free_slots[1].end_time == time(12, 0)

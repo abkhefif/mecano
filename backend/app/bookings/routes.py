@@ -163,11 +163,23 @@ async def create_booking(
         if chosen_start == availability.start_time and chosen_end == availability.end_time:
             pass  # booked_slot = availability, no changes needed
         else:
+            # Capture original slot details before deletion
+            orig_mechanic_id = availability.mechanic_id
+            orig_date = availability.date
+            orig_start = availability.start_time
+            orig_end = availability.end_time
+
+            # Delete the original big slot first to avoid UNIQUE constraint
+            # violations when creating split pieces that share the same
+            # (mechanic_id, date, start_time) as the original.
+            await db.delete(availability)
+            await db.flush()
+
             # Create the 30-min booked sub-slot
             booked_slot = Availability(
                 id=uuid.uuid4(),
-                mechanic_id=availability.mechanic_id,
-                date=availability.date,
+                mechanic_id=orig_mechanic_id,
+                date=orig_date,
                 start_time=chosen_start,
                 end_time=chosen_end,
                 is_booked=False,  # will be set to True below
@@ -175,32 +187,30 @@ async def create_booking(
             db.add(booked_slot)
 
             # Adjust the original slot: create remaining pieces
-            if chosen_start > availability.start_time:
+            if chosen_start > orig_start:
                 # Left piece: original_start → chosen_start
                 left_slot = Availability(
                     id=uuid.uuid4(),
-                    mechanic_id=availability.mechanic_id,
-                    date=availability.date,
-                    start_time=availability.start_time,
+                    mechanic_id=orig_mechanic_id,
+                    date=orig_date,
+                    start_time=orig_start,
                     end_time=chosen_start,
                     is_booked=False,
                 )
                 db.add(left_slot)
 
-            if chosen_end < availability.end_time:
+            if chosen_end < orig_end:
                 # Right piece: chosen_end → original_end
                 right_slot = Availability(
                     id=uuid.uuid4(),
-                    mechanic_id=availability.mechanic_id,
-                    date=availability.date,
+                    mechanic_id=orig_mechanic_id,
+                    date=orig_date,
                     start_time=chosen_end,
-                    end_time=availability.end_time,
+                    end_time=orig_end,
                     is_booked=False,
                 )
                 db.add(right_slot)
 
-            # Delete the original big slot (replaced by pieces)
-            await db.delete(availability)
             await db.flush()
 
             logger.info(
