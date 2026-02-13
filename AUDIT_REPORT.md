@@ -1,297 +1,247 @@
-# AUDIT COMPLET - eMecano
+# Audit de Publication - eMecano
 
-**Date**: 2026-02-11
-**Auditeur**: Claude Opus 4.6
-**Scope**: Backend FastAPI + Frontend React Native (Expo)
-
----
-
-## RESUME EXECUTIF
-
-| Severite   | Backend Security | Backend Arch/Errors | DB/Performance | Frontend | Tests | TOTAL |
-|------------|:---:|:---:|:---:|:---:|:---:|:---:|
-| CRITICAL   | 3   | 5   | 6   | 0   | 0   | **14** |
-| HIGH       | 2   | 8   | 4   | 1   | 1   | **16** |
-| MEDIUM     | 10  | 6   | 4   | 5   | 0   | **25** |
-| LOW        | 10  | 4   | 4   | 8   | 0   | **26** |
-| **TOTAL**  | **25** | **23** | **18** | **14** | **1** | **81** |
-
-**Tests**: 170/170 passing, 0 TypeScript errors
-**Coverage**: 77.30% (seuil: 85%) - FAIL
+**Date :** 13 février 2026
+**Version :** Post-corrections de production readiness
+**Stack :** FastAPI + SQLAlchemy + PostgreSQL + Stripe Connect + Redis (Backend) | React Native / Expo SDK 54 + TypeScript (Frontend)
 
 ---
 
-## 1. SECURITE
+## Résumé Exécutif
 
-### CRITICAL
+L'application a fait des progrès significatifs vers la production. La majorité des fonctionnalités critiques sont implémentées : authentification complète (inscription, connexion, réinitialisation mot de passe, changement mot de passe), conformité RGPD (suppression compte Art.17, export données Art.20), vérification email, notifications push, gestion des réservations, paiement Stripe Connect, système d'avis, messagerie, admin API, etc.
 
-- [ ] **SEC-001** | `backend/app/config.py:11,14` | Credentials DB hardcoded dans defaults
-  - Impact: Acces DB non autorise si .env manquant
-  - Fix: Supprimer defaults, valider au demarrage
+**Score global : ~85% prêt pour la publication**
 
-- [ ] **SEC-002** | `backend/app/payments/routes.py:72-82` | Webhook Stripe: bare except masque erreurs signature
-  - Impact: Webhooks forge possibles si secret vide
-  - Fix: Exception specifique + logging + validation secret au startup
-
-- [ ] **SEC-003** | `backend/app/config.py:31-33` | STRIPE_SECRET_KEY et WEBHOOK_SECRET default vides
-  - Impact: Mode mock silencieux en production
-  - Fix: Valider au demarrage comme JWT_SECRET
-
-### HIGH
-
-- [ ] **SEC-004** | `backend/app/config.py:11-14` | DATABASE_URL/REDIS_URL pas valides au startup
-  - Impact: Config silencieusement fausse
-  - Fix: Validators comme JWT_SECRET
-
-- [ ] **SEC-005** | `backend/app/bookings/routes.py:579` | Check-in code: comparaison non constant-time
-  - Impact: Timing attack sur code 4 digits
-  - Fix: `hmac.compare_digest()`
-
-### MEDIUM
-
-- [ ] **SEC-006** | `backend/app/main.py:76-83` | CORS wildcard "*" en dev
-- [ ] **SEC-007** | `backend/app/config.py:28` | Refresh token 30 jours (standard: 7j)
-- [ ] **SEC-008** | `backend/app/auth/routes.py:124-148` | Pas d'invalidation ancien refresh token
-- [ ] **SEC-009** | `backend/app/mechanics/routes.py:50-59` | Vehicle type non valide contre enum
-- [ ] **SEC-010** | `backend/app/bookings/routes.py:656` | Exception details leakees dans response
-- [ ] **SEC-011** | `backend/app/payments/routes.py:173` | Donnees sensibles dans logs webhook
-- [ ] **SEC-012** | `backend/app/referrals/routes.py:90-100` | Pas de rate limit sur validation referral
-- [ ] **SEC-013** | `backend/app/main.py:70-75` | allow_credentials=True en prod
-- [ ] **SEC-014** | `backend/app/utils/contact_mask.py` | Regex contournables (wa.me, 06.xx.xx)
-- [ ] **SEC-015** | `backend/app/auth/routes.py:56` | is_verified=True hardcode (pas de verif email)
-
-### LOW
-
-- [ ] **SEC-016** | Pas de rate limit sur endpoints list
-- [ ] **SEC-017** | `auth/service.py` | Bcrypt rounds non explicites
-- [ ] **SEC-018** | `referrals/routes.py` | Info disclosure sur validation code
-- [ ] **SEC-019** | `schemas/message.py` | Pas de min_length sur contenu message
-- [ ] **SEC-020** | `reports/generator.py` | Risque template injection Jinja2
-- [ ] **SEC-021** | `bookings/routes.py` | Check-in code non efface apres usage
-- [ ] **SEC-022** | Pas d'admin endpoints (verification identite, moderation)
-- [ ] **SEC-023** | `bookings/routes.py` | Folder upload non whitelist
-- [ ] **SEC-024** | `mechanics/routes.py` | GPS coords mechanics visibles sans auth
-- [ ] **SEC-025** | `config.py:28` | JWT access 15min (OWASP recommande 5min)
+Cependant, **7 BLOCKERS** et plusieurs points HIGH empêchent la mise en production.
 
 ---
 
-## 2. ARCHITECTURE & ERREURS
-
-### CRITICAL
-
-- [ ] **ARCH-001** | `bookings/routes.py:93-323` | create_booking = 230 lignes, multiple responsabilites
-  - Fix: Extraire vers services (split_slot, validate, setup_payment)
-
-- [ ] **ERR-001** | `bookings/routes.py:313-316` | Compensation transaction insuffisante si Stripe echoue
-  - Fix: Logging detaille + re-raise avec contexte
-
-- [ ] **ERR-002** | `bookings/routes.py:273-312` | Pas de rollback si buffer zone processing echoue
-  - Fix: Wrap dans try/catch avec logging
-
-- [ ] **ERR-003** | `bookings/routes.py:587` | Code brute-force: counter non persiste avant exception
-  - Fix: `await db.flush()` avant raise
-
-- [ ] **EDGE-001** | `bookings/routes.py:273-284` | Race condition: buffer zone query sans lock
-  - Fix: Etendre `with_for_update()` aux buffer zones
-
-### HIGH
-
-- [ ] **ARCH-002** | `bookings/routes.py:113-174` | Magic numbers (30min, 15min buffer, 2h advance)
-  - Fix: Centraliser dans config.py
-
-- [ ] **ARCH-003** | `services/scheduler.py:133-246` | Code duplique 24h/2h reminders (113 lignes)
-  - Fix: Extraire helper partage
-
-- [ ] **ERR-004** | `payments/routes.py:74-179` | Webhook handler: pas logging erreur, pas validation etat
-  - Fix: validate_transition() + logging
-
-- [ ] **ERR-005** | `services/scheduler.py:44-49` | release_payment catch all sans retry
-  - Fix: Distinguer erreurs temporaires/permanentes
-
-- [ ] **ERR-006** | `services/scheduler.py:75-86` | Batch processing sans commit par booking
-  - Fix: Commit apres chaque payment reussi
-
-- [ ] **ERR-007** | `bookings/routes.py:689-700` | PDF genere apres flush = etat inconsistant si PDF echoue
-  - Fix: Reordonner: PDF d'abord, puis save
-
-- [ ] **ERR-008** | `bookings/routes.py:429-440` | Cancel refund: timezone safety manquante
-  - Fix: UTC explicite sur tous datetime
-
-- [ ] **ARCH-004** | `_get_display_name` duplique entre bookings/routes.py et messages/routes.py
-  - Fix: Extraire vers utils/
-
-### MEDIUM
-
-- [ ] **ARCH-005** | `messages/routes.py:22-54` | Templates messages hardcodes en Python
-- [ ] **ARCH-006** | `referrals/routes.py:44-55` | Magic number 10 (max retries generation code)
-- [ ] **ERR-009** | `bookings/routes.py:101-106` | with_for_update sans timeout = deadlock possible
-- [ ] **ERR-010** | `services/storage.py:44-103` | Upload: fichier entier en memoire avant validation taille
-- [ ] **ERR-011** | `auth/routes.py:37-60` | User cree sans profil si flush echoue mid-registration
-- [ ] **ERR-012** | `messages/routes.py:121-133` | 1 message custom jamais modifiable/supprimable
-
-### LOW
-
-- [ ] **ARCH-007** | `_serialize_booking` retourne dict au lieu de Pydantic model
-- [ ] **ARCH-008** | `stripe_service.py` metadata pas type
-- [ ] **LOG-001** | Exception types pas captures dans logs scheduler
-- [ ] **LOG-002** | Stripe dispute: pas assez de details dans logs
-
----
-
-## 3. BASE DE DONNEES & PERFORMANCE
-
-### CRITICAL
-
-- [ ] **DB-001** | Tous les models | Aucun ON DELETE CASCADE/SET NULL sur foreign keys
-  - Impact: Orphelins en cascade si suppression
-  - Fix: Migration ajoutant ondelete sur toutes les FK
-
-- [ ] **DB-002** | `booking.py:33-35`, `mechanic_profile.py:19-20` | Float pour GPS coords
-  - Impact: Perte precision GPS (7 decimales au lieu de 8+)
-  - Fix: Numeric(9,6) pour lat/lng
-
-- [ ] **DB-003** | `review.py:27` | Pas de CHECK constraint rating 1-5
-  - Impact: Ratings invalides possibles
-  - Fix: CheckConstraint("rating >= 1 AND rating <= 5")
-
-- [ ] **DB-004** | `booking.py:36-41` | Pas de CHECK constraint prices >= 0
-  - Impact: Prix negatifs possibles
-  - Fix: CheckConstraint sur tous les champs prix
-
-- [ ] **PERF-001** | `mechanics/routes.py:35-127` | N+1 query sur mechanic list
-  - Fix: Eager loading avec selectinload
-
-- [ ] **PERF-002** | `booking.py` | Index composites manquants (buyer_id+status+created_at)
-  - Fix: Migration ajoutant index composites
-
-### HIGH
-
-- [ ] **DB-005** | `bookings/routes.py:100-116` | Race condition double booking - pas de UNIQUE constraint sur availability slot
-  - Fix: UNIQUE(mechanic_id, date, start_time, end_time)
-
-- [ ] **DB-006** | Multiples models | Nullable inconsistants (cancelled_by null quand status=cancelled)
-  - Fix: Check constraints conditionnels
-
-- [ ] **PERF-003** | Multiples models | lazy="raise" fragile, crash runtime si eager load oublie
-  - Fix: Documenter ou changer en lazy="select"
-
-- [ ] **PERF-004** | `mechanics/routes.py:60,127` | Pagination en Python apres fetch 500 records
-  - Fix: Pagination DB-level
-
-### MEDIUM
-
-- [ ] **DB-007** | `review.py` | Pas d'index sur booking_id
-- [ ] **DB-008** | `mechanic_profile.py` | JSON vehicle_types: cast(String).contains non indexable
-  - Fix: Index GIN sur JSON
-- [ ] **PERF-005** | `scheduler.py:58-88` | Batch processing charge tout en memoire
-- [ ] **PERF-006** | `reviews/routes.py:108-131` | 2 queries au lieu de 1 JOIN
-
-### LOW
-
-- [ ] **DB-009** | `message.py:21` | is_template default=True contre-intuitif
-- [ ] **DB-010** | Migration 004 header comment incorrect (dit revises 001, devrait etre 003)
-- [ ] **DB-011** | `validation_proof.py:23-24` | GPS lat/lng nullable independamment
-- [ ] **PERF-007** | Enum stockes en VARCHAR au lieu de PG ENUM
-
----
-
-## 4. FRONTEND
-
-### HIGH
-
-- [ ] **FE-001** | `app.config.ts:9` | Cle Stripe test reelle hardcodee
-  - Fix: Utiliser uniquement placeholder "pk_test_REPLACE_ME"
-
-### MEDIUM
-
-- [ ] **FE-002** | `utils/storage.ts:10-26` | localStorage pour tokens web (vulnerable XSS)
-- [ ] **FE-003** | `BookingConfirmScreen.tsx:134-145` | Pas de validation range coords GPS
-- [ ] **FE-004** | 33 occurrences de `catch (err: any)` au lieu de `unknown`
-- [ ] **FE-005** | `SearchScreen.tsx:100-104` | Fallback silencieux sur coords Paris si permission refusee
-- [ ] **FE-006** | `BookingConfirmScreen.tsx:49-64` | Reverse geocoding echoue silencieusement
-
-### LOW
-
-- [ ] **FE-007** | `LoginScreen.tsx:56` | Message debug avec status code expose a l'utilisateur
-- [ ] **FE-008** | `MechanicProfileScreen.tsx:45-54` | Erreur API referral avalee silencieusement
-- [ ] **FE-009** | `CheckOutScreen.tsx:91-150` | Validation formulaire incomplete avant API
-- [ ] **FE-010** | `SearchScreen.tsx` | 338 lignes, extractable en sous-composants
-- [ ] **FE-011** | `BookingConfirmScreen.tsx:111-114` | Validation annee permet futur (+1)
-- [ ] **FE-012** | `MechanicDetailScreen.tsx:67` | Pas de check null sur mechanicId
-- [ ] **FE-013** | Pas de JSDoc sur fonctions complexes
-- [ ] **FE-014** | Pas de tests unitaires frontend
-
----
-
-## 5. TESTS & COVERAGE
-
-### HIGH
-
-- [ ] **TEST-001** | Coverage globale 77.30% < seuil 85%
-  - Modules critiques sous-couverts:
-    - `services/scheduler.py`: **19%** (quasi entierement non teste)
-    - `payments/routes.py`: **34%**
-    - `services/notifications.py`: **38%**
-    - `messages/routes.py`: **40%**
-    - `referrals/routes.py`: **43%**
-    - `middleware.py`: **42%**
-    - `bookings/routes.py`: **70%** (gaps epars)
-
-### STATUS ACTUEL
-
-- Tests: **170/170 passing**
-- TypeScript: **0 erreurs**
-- Coverage: **77.30%** (FAIL)
-
----
-
-## PRIORITES DE FIX
-
-### P0 (BLOCKER - a fixer IMMEDIATEMENT): 14 issues
-
-1. **SEC-001**: Credentials DB hardcoded
-2. **SEC-002**: Webhook Stripe sans verification fiable
-3. **SEC-003**: Stripe secrets default vides
-4. **DB-001**: Pas de ON DELETE CASCADE/SET NULL
-5. **DB-003**: Pas de CHECK constraint rating
-6. **DB-004**: Pas de CHECK constraint prix
-7. **PERF-002**: Index composites manquants
-8. **ERR-001**: Transaction compensation insuffisante
-9. **ERR-003**: Brute-force counter non persiste
-10. **EDGE-001**: Race condition buffer zones
-11. **DB-005**: UNIQUE constraint availability manquante
-12. **DB-002**: Float pour GPS (precision)
-13. **PERF-001**: N+1 queries mechanics
-14. **ARCH-001**: create_booking 230 lignes (refactor)
-
-### P1 (HIGH - a fixer avant production): 16 issues
-
-Tous les issues HIGH des sections ci-dessus.
-
-### P2 (MEDIUM - a fixer quand possible): 25 issues
-
-Tous les issues MEDIUM des sections ci-dessus.
-
-### P3 (LOW - nice to have): 26 issues
-
-Tous les issues LOW des sections ci-dessus.
-
----
-
-## RAPPORT FINAL (pre-fix)
-
+## BLOCKERS (Publication impossible sans correction)
+
+### BLOCKER-1 : Intégration Stripe désactivée côté mobile
+- **Fichier :** `mobile/src/screens/buyer/BookingConfirmScreen.tsx`
+- **Problème :** L'import Stripe est commenté (`// import { useStripe } from "@stripe/stripe-react-native"; // TODO: re-enable with dev build`). Les réservations sont créées **sans paiement réel**.
+- **Impact :** Les utilisateurs peuvent réserver sans payer — faille business critique.
+- **Correction :** Réactiver `@stripe/stripe-react-native`, implémenter le flow de paiement (PaymentSheet / confirmPayment) avant confirmation de réservation. Nécessite un dev build EAS (pas Expo Go).
+
+### BLOCKER-2 : Clés de production manquantes (EAS / Apple / Google)
+- **Fichiers :** `mobile/app.config.ts`, `mobile/eas.json`
+- **Problème :**
+  - Stripe publishable key : `"pk_test_REPLACE_ME"` (placeholder)
+  - EAS Project ID : `"REPLACE_WITH_EAS_PROJECT_ID"`
+  - Apple credentials : `appleId`, `ascAppId`, `appleTeamId` = `"REPLACE_ME"`
+  - Google Play : `google-services.json` manquant
+- **Correction :** Configurer toutes les clés via variables d'environnement EAS et fichiers de credentials.
+
+### BLOCKER-3 : Icônes et splash screen par défaut Expo
+- **Dossier :** `mobile/assets/`
+- **Problème :** Les fichiers d'icônes ont des timestamps placeholder (Oct 26, 1985), probablement les icônes par défaut Expo.
+- **Impact :** Rejet immédiat par Apple et Google Play.
+- **Correction :** Remplacer par les vrais assets de marque eMecano (icon 1024x1024, adaptive-icon, splash).
+
+### BLOCKER-4 : Dockerfile sans HEALTHCHECK
+- **Fichier :** `backend/Dockerfile`
+- **Problème :** Pas d'instruction HEALTHCHECK. Les orchestrateurs (K8s, ECS, Docker Swarm) ne peuvent pas détecter un container mort.
+- **Impact :** Le load balancer enverra du trafic à des containers crashés.
+- **Correction :**
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD python -c "import httpx; httpx.get('http://localhost:8000/health', timeout=3.0)" || exit 1
 ```
-AUDIT TERMINE - PRE-FIX
 
-Problemes trouves: 81
-  - CRITICAL: 14
-  - HIGH: 16
-  - MEDIUM: 25
-  - LOW: 26
-
-Tests: 170/170 passing
-Coverage: 77.30% (FAIL - seuil 85%)
-TypeScript errors: 0
-
-Le projet necessite des corrections P0/P1 avant toute mise en production.
+### BLOCKER-5 : Uvicorn en mode single-worker
+- **Fichier :** `backend/Dockerfile`
+- **Problème :** Un seul process `uvicorn` = 1 seul CPU utilisé, aucune redondance, pas de graceful restart.
+- **Impact :** Ne peut pas gérer le trafic de production.
+- **Correction :** Passer à Gunicorn + Uvicorn workers :
+```dockerfile
+CMD ["gunicorn", "app.main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "120", "--graceful-timeout", "30", "--max-requests", "1000", "--max-requests-jitter", "100"]
 ```
+
+### BLOCKER-6 : Aucune stratégie de backup base de données
+- **Fichier :** `docker-compose.yml`
+- **Problème :** Aucun backup automatisé, aucun pg_dump, aucune politique de rétention, aucune procédure de disaster recovery.
+- **Impact :** Perte de données irréversible en cas de panne. RGPD Art.32 exige la résilience des données.
+- **Correction :** Ajouter un script `backup.sh` avec pg_dump quotidien + rétention 30 jours, ou utiliser une base managée (AWS RDS, Google Cloud SQL) avec backups automatiques.
+
+### BLOCKER-7 : Société non encore immatriculée
+- **Fichiers :** `mobile/src/screens/shared/LegalScreen.tsx`
+- **Problème :** SIRET mentionné comme "en cours d'obtention". Les CGU/CGV référencent une entité légale inexistante.
+- **Impact :** Publication impossible sur les stores sans entité légale valide (Apple et Google exigent un compte développeur rattaché à une entité). Pas de contrat valide avec les utilisateurs.
+- **Correction :** Obtenir l'immatriculation SIRET, mettre à jour les mentions légales.
+
+---
+
+## HIGH (À corriger avant le lancement)
+
+### HIGH-1 : iOS Privacy Manifest manquant
+- **Impact :** Requis par Apple depuis iOS 17 (printemps 2024). Sans `PrivacyInfo.xcprivacy`, l'app sera rejetée.
+- **Correction :** Créer le fichier déclarant NSPrivacyAccessedAPITypes, NSPrivacyTracking, NSPrivacyTrackingDomains (PostHog, Sentry).
+
+### HIGH-2 : App Tracking Transparency (ATT) manquant
+- **Fichier :** `mobile/app.json`
+- **Impact :** Requis par Apple si PostHog ou Sentry collectent des données.
+- **Correction :** Ajouter `NSUserTrackingUsageDescription` dans infoPlist.
+
+### HIGH-3 : Commentaire TODO trompeur dans main.py
+- **Fichier :** `backend/app/main.py` (lignes 1-3)
+- **Problème :** Le commentaire dit "il n'y a pas d'admin API" alors qu'elle existe (`backend/app/admin/routes.py` avec stats, users, mechanics, bookings, disputes, revenue).
+- **Correction :** Supprimer les lignes 1-3 du fichier.
+
+### HIGH-4 : Validation CORS_ORIGINS en production manquante
+- **Fichier :** `backend/app/config.py`
+- **Problème :** Si `CORS_ORIGINS=""` en production, `cors_origins_list` retourne `[]` → toutes les requêtes cross-origin échouent.
+- **Correction :** Ajouter validation dans `validate_production_settings`.
+
+### HIGH-5 : Validation R2/S3 en production manquante
+- **Fichier :** `backend/app/config.py`
+- **Problème :** Si les credentials R2 ne sont pas configurés, les uploads (photos d'inspection, documents, PDF) crasheront silencieusement.
+- **Correction :** Valider la présence de R2_ENDPOINT_URL, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_PUBLIC_URL en production.
+
+### HIGH-6 : APScheduler non compatible multi-worker
+- **Fichier :** `backend/app/services/scheduler.py`
+- **Problème :** `AsyncIOScheduler` avec job store en mémoire → chaque worker Gunicorn lance son propre scheduler = jobs dupliqués, emails en double, race conditions.
+- **Correction :** Extraire le scheduler dans un container dédié ou utiliser Celery + Redis.
+
+### HIGH-7 : alembic.ini avec placeholder DATABASE_URL
+- **Fichier :** `backend/alembic.ini:4`
+- **Problème :** `sqlalchemy.url = driver://user:pass@localhost/dbname` — `alembic upgrade head` échouera.
+- **Correction :** Configurer la vraie URL ou modifier `alembic/env.py` pour lire depuis les settings.
+
+### HIGH-8 : SSL Certificate Pinning non implémenté
+- **Fichier :** `mobile/src/services/api.ts`
+- **Problème :** TODO indique que le certificate pinning n'est pas configuré.
+- **Impact :** Vulnérable aux attaques MITM.
+- **Correction :** Implémenter avec `react-native-ssl-pinning` ou TrustKit pour les builds de production.
+
+---
+
+## MEDIUM (À corriger dans le premier mois)
+
+### MEDIUM-1 : .env.example avec JWT_SECRET faible
+- **Fichier :** `backend/.env.example:8`
+- **Problème :** `JWT_SECRET=change-this-to-a-long-random-string-in-production` est dans la liste `KNOWN_WEAK_SECRETS`.
+- **Correction :** Remplacer par `JWT_SECRET=REPLACE_WITH_OUTPUT_OF_openssl_rand_base64_32`.
+
+### MEDIUM-2 : Localhost hardcodé dans l'API mobile
+- **Fichier :** `mobile/src/services/api.ts`
+- **Problème :** Plusieurs fallbacks `http://localhost:8001`. En production, si les variables d'environnement ne sont pas définies, l'app se connectera à localhost.
+- **Correction :** Ajouter une vérification runtime ou lever une erreur si API_BASE_URL n'est pas configuré en production.
+
+### MEDIUM-3 : Rate limit headers manquants
+- **Problème :** Les rate limits sont appliqués mais pas visibles aux consommateurs API (pas de `X-RateLimit-Remaining`, `Retry-After`).
+- **Correction :** Configurer SlowAPI pour inclure les headers.
+
+### MEDIUM-4 : Adresse email expéditeur hardcodée
+- **Fichiers :** `backend/app/services/email_service.py`, `backend/app/services/notifications.py`
+- **Problème :** `"eMecano <noreply@emecano.fr>"` hardcodé.
+- **Correction :** Déplacer dans `config.py` : `EMAIL_FROM: str`.
+
+### MEDIUM-5 : Pas de monitoring du pool de connexions DB
+- **Fichier :** `backend/app/database.py`
+- **Problème :** Pool configuré (`pool_size=10, max_overflow=20`) mais pas de monitoring.
+- **Correction :** Ajouter des event listeners SQLAlchemy ou des métriques Prometheus.
+
+### MEDIUM-6 : Documentation environnement manquante (mobile)
+- **Problème :** Pas de `.env.example` ni de README documentant les variables requises pour le mobile.
+- **Correction :** Documenter `API_BASE_URL`, `STRIPE_PUBLISHABLE_KEY`, `SENTRY_DSN`, `POSTHOG_API_KEY`, `EAS_PROJECT_ID`.
+
+---
+
+## LOW (Nice to have)
+
+| # | Issue | Détail |
+|---|-------|--------|
+| LOW-1 | Pas de endpoint `/metrics` | Prometheus/monitoring non disponible |
+| LOW-2 | Pas de versioning API | `/bookings` au lieu de `/v1/bookings` |
+| LOW-3 | Pas de documentation de rollback migration | `alembic downgrade -1` non documenté |
+| LOW-4 | console.warn en prod (web) | `storage.ts:23` — warning non gardé par `__DEV__` (mais gardé en réalité, LOW) |
+| LOW-5 | Build version management | Synchroniser versions entre `app.json` et `package.json` |
+
+---
+
+## Ce qui est DÉJÀ PRÊT ✅
+
+### Backend
+- [x] Authentification complète (inscription, connexion, vérification email, logout)
+- [x] Réinitialisation mot de passe (forgot-password + reset-password)
+- [x] Changement mot de passe (change-password avec validation complexité)
+- [x] RGPD : Suppression de compte (Art.17) avec anonymisation
+- [x] RGPD : Export des données personnelles (Art.20)
+- [x] Token blacklisting (logout sécurisé)
+- [x] Vérification email via Resend API
+- [x] Headers de sécurité (HSTS, X-Frame-Options, CSP)
+- [x] Rate limiting (SlowAPI) sur tous les endpoints sensibles
+- [x] Logging structuré (structlog en JSON)
+- [x] Sentry intégré
+- [x] Middleware Request ID (X-Request-ID)
+- [x] Admin API complète (stats, users, mechanics, bookings, disputes, revenue)
+- [x] Stripe Connect marketplace (capture manuelle, commission 20%)
+- [x] Webhook Stripe idempotent (account.updated)
+- [x] Pool de connexions DB configuré (pool_size=10, max_overflow=20)
+- [x] Validation JWT secret (32+ chars, rejet des secrets faibles)
+- [x] Jobs de nettoyage (notifications, push tokens)
+- [x] Tests : 297 passent, 3 skipped, 1 échec pré-existant (test_messages)
+
+### Frontend
+- [x] Écran de réinitialisation mot de passe (ForgotPasswordScreen)
+- [x] Écran de changement mot de passe (ChangePasswordScreen)
+- [x] Suppression de compte dans les deux profils (buyer + mechanic)
+- [x] CGU/CGV avec contenu réel en français
+- [x] Case à cocher CGU à l'inscription
+- [x] Accents français corrigés partout
+- [x] Notifications push avec navigation au tap
+- [x] Bannière de connectivité réseau (NetworkBanner)
+- [x] Consentement RGPD avant initialisation PostHog
+- [x] Error boundaries et optimisations React.memo
+- [x] Permissions iOS correctement déclarées (localisation, caméra, photos)
+- [x] Permissions Android correctement déclarées
+- [x] Sentry configuré (natif uniquement, web-safe)
+- [x] PostHog analytics avec consentement
+- [x] Écrans légaux (CGU, Confidentialité, Mentions légales)
+- [x] TypeScript compilé sans erreur
+- [x] UI/UX professionnelle et cohérente
+
+---
+
+## Checklist de Déploiement
+
+Avant la mise en production :
+
+1. [ ] Corriger les 7 BLOCKERS
+2. [ ] Corriger les 8 HIGH
+3. [ ] Configurer les variables d'environnement de production :
+   - `JWT_SECRET` (32+ chars, aléatoire — `openssl rand -base64 32`)
+   - `STRIPE_SECRET_KEY` et `STRIPE_WEBHOOK_SECRET`
+   - `STRIPE_PUBLISHABLE_KEY` (côté mobile)
+   - `R2_*` credentials stockage
+   - `RESEND_API_KEY`
+   - `SENTRY_DSN` (backend + mobile)
+   - `POSTHOG_API_KEY`
+   - `CORS_ORIGINS` (URLs frontend production)
+   - `APP_ENV=production`
+4. [ ] Configurer les credentials EAS (Apple + Google Play)
+5. [ ] Remplacer les assets (icônes, splash screen) par la marque eMecano
+6. [ ] Créer le Privacy Manifest iOS (`PrivacyInfo.xcprivacy`)
+7. [ ] Lancer les migrations : `alembic upgrade head`
+8. [ ] Créer un utilisateur admin : `python scripts/create_admin.py admin@emecano.fr <password>`
+9. [ ] Tester le flow Stripe Connect end-to-end
+10. [ ] Préparer les métadonnées App Store (captures d'écran, descriptions, catégorie)
+11. [ ] Préparer la fiche Google Play (descriptions, captures, politique de confidentialité URL)
+12. [ ] Load test avec trafic réaliste (100+ réservations simultanées)
+13. [ ] Configurer le monitoring (Sentry erreurs + métriques)
+14. [ ] Documenter le runbook d'incidents (restore DB, rollback deploy, etc.)
+
+---
+
+## Estimation
+
+| Catégorie | Nombre | Effort estimé |
+|-----------|--------|---------------|
+| BLOCKERS | 7 | 3-5 jours |
+| HIGH | 8 | 2-3 jours |
+| MEDIUM | 6 | 1-2 jours |
+| LOW | 5 | < 1 jour |
+| **Total** | **26** | **~7-10 jours** |
+
+> **Note :** Le BLOCKER-7 (immatriculation société) est un prérequis administratif qui ne dépend pas du développement. Le BLOCKER-1 (intégration Stripe) est le plus critique côté code — sans paiement, l'app n'a pas de modèle économique.
