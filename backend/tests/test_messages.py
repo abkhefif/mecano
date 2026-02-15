@@ -120,7 +120,7 @@ async def test_send_template_message(
     response = await client.post(
         f"/bookings/{booking.id}/messages",
         json={
-            "content": "Je serai en retard de 10 minutes environ",
+            "content": "Je serai en retard de 10 minutes",
             "is_template": True,
         },
         headers=auth_header(token),
@@ -128,7 +128,7 @@ async def test_send_template_message(
     assert response.status_code == 201
     data = response.json()
     assert data["is_template"] is True
-    assert data["content"] == "Je serai en retard de 10 minutes environ"
+    assert data["content"] == "Je serai en retard de 10 minutes"
     assert data["sender_id"] == str(buyer_user.id)
 
 
@@ -184,18 +184,18 @@ async def test_send_custom_message(
 
 
 @pytest.mark.asyncio
-async def test_custom_message_limit_one_per_user(
+async def test_custom_message_multiple_allowed(
     client: AsyncClient,
     db: AsyncSession,
     buyer_user: User,
     mechanic_profile: MechanicProfile,
 ):
-    """Only one custom message allowed per user per booking."""
+    """Multiple custom messages are allowed per user per booking."""
     booking = _make_booking(buyer_user.id, mechanic_profile.id)
     db.add(booking)
     await db.flush()
 
-    # First custom message should succeed
+    # First custom message
     existing_msg = Message(
         booking_id=booking.id,
         sender_id=buyer_user.id,
@@ -206,6 +206,7 @@ async def test_custom_message_limit_one_per_user(
     await db.flush()
 
     token = buyer_token(buyer_user)
+    # Second custom message should also succeed
     response = await client.post(
         f"/bookings/{booking.id}/messages",
         json={
@@ -214,8 +215,8 @@ async def test_custom_message_limit_one_per_user(
         },
         headers=auth_header(token),
     )
-    assert response.status_code == 409
-    assert "message personnalis" in response.json()["detail"].lower()
+    assert response.status_code == 201
+    assert response.json()["content"] == "Second custom message"
 
 
 @pytest.mark.asyncio
@@ -345,7 +346,7 @@ async def test_mechanic_can_send_template_message(
     response = await client.post(
         f"/bookings/{booking.id}/messages",
         json={
-            "content": "Je suis arriv\u00e9 sur place",
+            "content": "Je suis arrivé",
             "is_template": True,
         },
         headers=auth_header(token),

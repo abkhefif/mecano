@@ -105,30 +105,21 @@ async def send_message(
                 detail="Template message limit reached (20 per booking)",
             )
     else:
-        # Custom message: check user hasn't already sent one for this booking.
-        #
-        # DESIGN DECISION (ERR-012): Custom messages are intentionally immutable
-        # (no edit / no delete endpoints). This is by design for trust and
-        # traceability reasons:
-        #   1. Both parties (buyer and mechanic) must be able to rely on the
-        #      conversation history as an accurate record in case of disputes.
-        #   2. Allowing edits or deletions would let a party alter evidence
-        #      after the fact, undermining the dispute resolution process.
-        #   3. The one-custom-message-per-user limit further prevents spam
-        #      while keeping a clean audit trail.
-        existing_result = await db.execute(
-            select(Message).where(
+        # Anti-spam: limit custom messages to 30 per user per booking
+        custom_count_result = await db.execute(
+            select(func.count(Message.id)).where(
                 Message.booking_id == booking.id,
                 Message.sender_id == user.id,
                 Message.is_template == False,  # noqa: E712
             )
         )
-        if existing_result.scalar_one_or_none():
+        custom_count = custom_count_result.scalar() or 0
+        if custom_count >= 30:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Vous avez déjà envoyé un message personnalisé pour cette réservation",
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Limite de messages atteinte (30 par réservation)",
             )
-        # Mask contact information
+        # Mask contact information (phone, email, social media)
         body.content = mask_contacts(body.content)
 
     message = Message(
