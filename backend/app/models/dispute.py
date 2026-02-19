@@ -22,8 +22,8 @@ class DisputeCase(Base):
     booking_id: Mapped[uuid.UUID] = mapped_column(
         GUID(), ForeignKey("bookings.id", ondelete="CASCADE"), unique=True, nullable=False
     )
-    opened_by: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    opened_by: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     reason: Mapped[DisputeReason] = mapped_column(String(20), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -33,11 +33,11 @@ class DisputeCase(Base):
     )
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     resolved_by_admin: Mapped[uuid.UUID | None] = mapped_column(
-        GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+        GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     resolution_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     booking: Mapped["Booking"] = relationship("Booking", back_populates="dispute")
-    opener: Mapped["User"] = relationship("User", foreign_keys=[opened_by])
+    opener: Mapped["User | None"] = relationship("User", foreign_keys=[opened_by])
     admin: Mapped["User | None"] = relationship("User", foreign_keys=[resolved_by_admin])

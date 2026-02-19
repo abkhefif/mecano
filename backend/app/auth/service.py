@@ -1,21 +1,45 @@
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from jose import JWTError, jwt
-from passlib.context import CryptContext
+import bcrypt as _bcrypt
+import jwt
 
 from app.config import settings
 
-# SEC-017: Explicitly set bcrypt rounds to prevent surprise changes if the library default shifts
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
+# SEC-017: Bcrypt cost factor 12 (same as previous passlib config)
+_BCRYPT_ROUNDS = 12
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    """Hash a password using bcrypt. Synchronous — used in tests and fixtures."""
+    salt = _bcrypt.gensalt(rounds=_BCRYPT_ROUNDS)
+    return _bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+
+
+async def hash_password_async(password: str) -> str:
+    """ARCH-002: Async wrapper to avoid blocking the event loop (~300ms per call)."""
+    return await asyncio.to_thread(hash_password, password)
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify a password against its bcrypt hash. Synchronous — used in tests and fixtures.
+
+    Compatible with both old passlib hashes and new direct-bcrypt hashes
+    (both produce standard $2b$ format).
+    """
+    try:
+        return _bcrypt.checkpw(
+            plain_password.encode("utf-8"),
+            hashed_password.encode("utf-8"),
+        )
+    except (ValueError, TypeError):
+        return False
+
+
+async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
+    """ARCH-002: Async wrapper to avoid blocking the event loop (~300ms per call)."""
+    return await asyncio.to_thread(verify_password, plain_password, hashed_password)
 
 
 def create_access_token(user_id: str) -> str:
@@ -59,7 +83,7 @@ def decode_refresh_token(token: str) -> str | None:
         if payload.get("type") != "refresh":
             return None
         return payload.get("sub")
-    except JWTError:
+    except jwt.PyJWTError:
         return None
 
 
@@ -94,5 +118,5 @@ def decode_password_reset_token(token: str) -> dict | None:
         if payload.get("type") != "password_reset":
             return None
         return payload
-    except JWTError:
+    except jwt.PyJWTError:
         return None

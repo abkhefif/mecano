@@ -1,3 +1,4 @@
+from app.models.audit_log import AuditLog
 from app.models.availability import Availability
 from app.models.blacklisted_token import BlacklistedToken
 from app.models.booking import Booking
@@ -15,6 +16,7 @@ from app.models.validation_proof import ValidationProof
 from app.models.webhook_event import ProcessedWebhookEvent
 
 __all__ = [
+    "AuditLog",
     "User",
     "MechanicProfile",
     "Availability",

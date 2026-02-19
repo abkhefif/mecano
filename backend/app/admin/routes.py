@@ -2,41 +2,34 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import select, func, case, cast, Date
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.dependencies import get_current_admin
+from app.utils.rate_limit import limiter
+from app.models.audit_log import AuditLog
 from app.models.booking import Booking
 from app.models.dispute import DisputeCase
 from app.models.enums import BookingStatus, DisputeStatus, UserRole
 from app.models.mechanic_profile import MechanicProfile
 from app.models.user import User
+from app.schemas.admin import VerifyMechanicRequest, SuspendUserRequest
+from app.services.storage import get_sensitive_url
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/admin", tags=["admin"])
-
-
-# --- Request / Response schemas ---
-
-
-class VerifyMechanicRequest(BaseModel):
-    approved: bool
-
-
-class SuspendUserRequest(BaseModel):
-    suspended: bool
-    reason: str | None = None
 
 
 # --- 1. Platform stats ---
 
 
 @router.get("/stats")
+@limiter.limit("30/minute")
 async def platform_stats(
+    request: Request,
     admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -107,10 +100,12 @@ async def platform_stats(
 
 
 @router.get("/users")
+@limiter.limit("30/minute")
 async def list_users(
+    request: Request,
     role: str | None = None,
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=10000),
     admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -158,7 +153,9 @@ async def list_users(
 
 
 @router.get("/users/{user_id}")
+@limiter.limit("30/minute")
 async def get_user_detail(
+    request: Request,
     user_id: uuid.UUID,
     admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
@@ -185,6 +182,7 @@ async def get_user_detail(
     }
 
     # If mechanic, include profile info
+    profile = None
     if user.role == UserRole.MECHANIC:
         profile_result = await db.execute(
             select(MechanicProfile).where(MechanicProfile.user_id == user.id)
@@ -201,14 +199,18 @@ async def get_user_detail(
                 "has_obd_diagnostic": profile.has_obd_diagnostic,
                 "no_show_count": profile.no_show_count,
                 "suspended_until": profile.suspended_until.isoformat() if profile.suspended_until else None,
-                "stripe_account_id": profile.stripe_account_id,
                 "created_at": profile.created_at.isoformat() if profile.created_at else None,
             }
 
-    # Booking count
-    booking_count_result = await db.execute(
-        select(func.count(Booking.id)).where(Booking.buyer_id == user.id)
-    )
+    # AUD-017: Count bookings correctly based on user role
+    if user.role == UserRole.MECHANIC and profile:
+        booking_count_result = await db.execute(
+            select(func.count(Booking.id)).where(Booking.mechanic_id == profile.id)
+        )
+    else:
+        booking_count_result = await db.execute(
+            select(func.count(Booking.id)).where(Booking.buyer_id == user.id)
+        )
     user_data["booking_count"] = booking_count_result.scalar() or 0
 
     return user_data
@@ -218,7 +220,9 @@ async def get_user_detail(
 
 
 @router.patch("/users/{user_id}/suspend")
+@limiter.limit("30/minute")
 async def suspend_user(
+    request: Request,
     user_id: uuid.UUID,
     body: SuspendUserRequest,
     admin: User = Depends(get_current_admin),
@@ -239,6 +243,15 @@ async def suspend_user(
             detail="Cannot suspend admin users",
         )
 
+    # F-020: Buyer accounts have no MechanicProfile.suspended_until field,
+    # so suspension has no effect. Return an explicit error instead of silently
+    # doing nothing. Use deactivation (account deletion) for buyers.
+    if user.role == UserRole.BUYER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Buyer accounts cannot be suspended. Use deactivation instead.",
+        )
+
     if user.role == UserRole.MECHANIC:
         profile_result = await db.execute(
             select(MechanicProfile).where(MechanicProfile.user_id == user.id)
@@ -253,6 +266,13 @@ async def suspend_user(
                 profile.suspended_until = None
                 profile.is_active = True
 
+    # ADMIN-R01: Audit log
+    db.add(AuditLog(
+        action="suspend_user" if body.suspended else "unsuspend_user",
+        admin_user_id=admin.id,
+        target_user_id=user.id,
+        detail=body.reason,
+    ))
     await db.flush()
     logger.info(
         "user_suspension_changed",
@@ -272,9 +292,11 @@ async def suspend_user(
 
 
 @router.get("/mechanics/pending-verification")
+@limiter.limit("30/minute")
 async def pending_verification(
+    request: Request,
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=10000),
     admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -300,23 +322,24 @@ async def pending_verification(
     total_result = await db.execute(count_stmt)
     total = total_result.scalar() or 0
 
+    mechanics_list = []
+    for p in profiles:
+        mechanics_list.append({
+            "id": str(p.id),
+            "user_id": str(p.user_id),
+            "email": p.user.email if p.user else None,
+            "first_name": p.user.first_name if p.user else None,
+            "last_name": p.user.last_name if p.user else None,
+            "city": p.city,
+            "identity_document_url": await get_sensitive_url(p.identity_document_url),
+            "selfie_with_id_url": await get_sensitive_url(p.selfie_with_id_url),
+            "cv_url": await get_sensitive_url(p.cv_url),
+            "created_at": p.created_at.isoformat() if p.created_at else None,
+        })
+
     return {
         "total": total,
-        "mechanics": [
-            {
-                "id": str(p.id),
-                "user_id": str(p.user_id),
-                "email": p.user.email if p.user else None,
-                "first_name": p.user.first_name if p.user else None,
-                "last_name": p.user.last_name if p.user else None,
-                "city": p.city,
-                "identity_document_url": p.identity_document_url,
-                "selfie_with_id_url": p.selfie_with_id_url,
-                "cv_url": p.cv_url,
-                "created_at": p.created_at.isoformat() if p.created_at else None,
-            }
-            for p in profiles
-        ],
+        "mechanics": mechanics_list,
     }
 
 
@@ -324,7 +347,9 @@ async def pending_verification(
 
 
 @router.patch("/mechanics/{mechanic_id}/verify")
+@limiter.limit("30/minute")
 async def verify_mechanic(
+    request: Request,
     mechanic_id: uuid.UUID,
     body: VerifyMechanicRequest,
     admin: User = Depends(get_current_admin),
@@ -342,6 +367,17 @@ async def verify_mechanic(
         )
 
     profile.is_identity_verified = body.approved
+    # AUD-028: Auto-activate mechanic after identity verification approval
+    if body.approved:
+        profile.is_active = True
+
+    # ADMIN-R01: Audit log
+    db.add(AuditLog(
+        action="verify_mechanic" if body.approved else "reject_mechanic",
+        admin_user_id=admin.id,
+        target_user_id=profile.user_id,
+        detail=f"Mechanic {mechanic_id} {'approved' if body.approved else 'rejected'}",
+    ))
     await db.flush()
 
     logger.info(
@@ -361,12 +397,14 @@ async def verify_mechanic(
 
 
 @router.get("/bookings")
+@limiter.limit("30/minute")
 async def list_bookings(
+    request: Request,
     booking_status: str | None = Query(None, alias="status"),
     date_from: str | None = None,
     date_to: str | None = None,
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=10000),
     admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -441,10 +479,12 @@ async def list_bookings(
 
 
 @router.get("/disputes")
+@limiter.limit("30/minute")
 async def list_disputes(
+    request: Request,
     dispute_status: str | None = Query(None, alias="status"),
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=10000),
     admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -497,7 +537,9 @@ async def list_disputes(
 
 
 @router.get("/revenue")
+@limiter.limit("30/minute")
 async def revenue_breakdown(
+    request: Request,
     days: int = Query(30, ge=1, le=365),
     admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),

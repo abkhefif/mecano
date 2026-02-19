@@ -23,7 +23,7 @@ async def list_notifications(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=10000),
 ):
     """List notifications for the current user with unread count."""
     result = await db.execute(
@@ -50,7 +50,9 @@ async def list_notifications(
 
 
 @router.patch("/{notification_id}/read", response_model=NotificationResponse)
+@limiter.limit("60/minute")
 async def mark_notification_read(
+    request: Request,
     notification_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -80,7 +82,9 @@ async def mark_notification_read(
 
 
 @router.patch("/read-all", response_model=dict)
+@limiter.limit("60/minute")
 async def mark_all_read(
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):

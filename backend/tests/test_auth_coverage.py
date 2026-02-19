@@ -120,6 +120,7 @@ async def test_register_mechanic_with_valid_referral(
             "password": "SecurePass123",
             "role": "mechanic",
             "referral_code": "EMECANO-REF001",
+            "cgu_accepted": True,
         },
     )
     assert response.status_code == 201
@@ -137,6 +138,7 @@ async def test_register_mechanic_with_invalid_referral(
             "password": "SecurePass123",
             "role": "mechanic",
             "referral_code": "EMECANO-NOPE00",
+            "cgu_accepted": True,
         },
     )
     assert response.status_code == 400
@@ -174,7 +176,7 @@ async def test_forgot_password_valid_email(
     )
     assert response.status_code == 200
     data = response.json()
-    assert "reinitialisation" in data["message"]
+    assert "reset link has been sent" in data["message"]
 
 
 @pytest.mark.asyncio
@@ -188,7 +190,7 @@ async def test_forgot_password_invalid_email(
     )
     assert response.status_code == 200
     data = response.json()
-    assert "reinitialisation" in data["message"]
+    assert "reset link has been sent" in data["message"]
 
 
 @pytest.mark.asyncio
@@ -205,7 +207,7 @@ async def test_reset_password_valid_token(
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["message"] == "Mot de passe reinitialise avec succes"
+    assert data["message"] == "Password reset successfully"
 
     # Verify can login with new password
     login_response = await client.post(
@@ -225,7 +227,7 @@ async def test_reset_password_invalid_token(
         json={"token": "invalid_token", "new_password": "NewSecure123"},
     )
     assert response.status_code == 400
-    assert "invalide ou expire" in response.json()["detail"]
+    assert "Invalid or expired reset token" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -234,7 +236,7 @@ async def test_reset_password_expired_token(
     buyer_user: User,
 ):
     """POST /auth/reset-password rejects expired tokens."""
-    from jose import jwt
+    import jwt
     from app.config import settings
 
     # Create a token that is already expired
@@ -278,7 +280,7 @@ async def test_reset_password_token_reuse_blocked(
         json={"token": reset_token, "new_password": "AnotherPass123"},
     )
     assert response2.status_code == 400
-    assert "deja ete utilise" in response2.json()["detail"]
+    assert "This token has already been used" in response2.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -314,7 +316,7 @@ async def test_change_password_success(
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["message"] == "Mot de passe modifie avec succes"
+    assert data["message"] == "Password changed successfully"
 
     # Verify can login with new password
     login_response = await client.post(
@@ -337,7 +339,7 @@ async def test_change_password_wrong_old_password(
         headers=auth_header(token),
     )
     assert response.status_code == 400
-    assert "Ancien mot de passe incorrect" in response.json()["detail"]
+    assert "Incorrect old password" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -389,7 +391,7 @@ async def test_delete_account_buyer(
     )
     assert response.status_code == 200
     data = response.json()
-    assert data["message"] == "Votre compte a ete supprime"
+    assert data["message"] == "Your account has been deleted"
 
     # Verify user data is anonymized
     result = await db.execute(select(User).where(User.id == user_id))
@@ -398,7 +400,7 @@ async def test_delete_account_buyer(
     assert "deleted_" in user.email
     assert "@deleted.emecano.local" in user.email
     assert user.first_name == "Utilisateur"
-    assert user.last_name == "supprime"
+    assert user.last_name == "Supprime"
     assert user.phone is None
 
 

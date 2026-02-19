@@ -2,7 +2,7 @@ import secrets
 import string
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -73,7 +73,9 @@ async def generate_referral_code(
 
 
 @router.get("/my-code", response_model=ReferralCodeResponse)
+@limiter.limit("30/minute")
 async def get_my_referral_code(
+    request: Request,
     mechanic_data: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
     db: AsyncSession = Depends(get_db),
 ):
@@ -97,7 +99,7 @@ async def get_my_referral_code(
 @limiter.limit(AUTH_RATE_LIMIT)
 async def validate_referral_code(
     request: Request,
-    code: str,
+    code: str = Path(..., min_length=1, max_length=30),
     db: AsyncSession = Depends(get_db),
 ):
     """Check if a referral code is valid (public endpoint for registration).

@@ -4,7 +4,7 @@ from math import cos, radians
 
 import structlog
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile, status
-from sqlalchemy import select, func, and_
+from sqlalchemy import and_, cast, func, or_, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -46,7 +46,7 @@ async def list_mechanics(
     radius_km: int = Query(50, ge=1, le=200),
     vehicle_type: VehicleType = Query(VehicleType.CAR),
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=10000),
     db: AsyncSession = Depends(get_db),
 ):
     """Search for verified mechanics near a location.
@@ -69,7 +69,6 @@ async def list_mechanics(
     # Build query with vehicle_type filter for SQL performance.
     # selectinload(MechanicProfile.user) eagerly loads the related User in a
     # single extra SELECT, avoiding N+1 queries when serialising the response.
-    from sqlalchemy import cast, String
     stmt = (
         select(MechanicProfile)
         .options(selectinload(MechanicProfile.user))
@@ -82,7 +81,7 @@ async def list_mechanics(
             MechanicProfile.city_lng <= lng + lng_delta,
             cast(MechanicProfile.accepted_vehicle_types, String).contains(vehicle_type.value),
         )
-        .limit(500)  # Intentional hard cap — see docstring
+        .limit(200)  # AUD-M10: Reduced from 500 to 200 to limit memory usage
     )
 
     result = await db.execute(stmt)
@@ -98,7 +97,6 @@ async def list_mechanics(
     profile_ids = [p.id for p in profiles]
 
     # Exclude past slots: future dates OR today with start_time still in the future
-    from sqlalchemy import or_
     avail_stmt = (
         select(
             Availability.mechanic_id,
@@ -128,6 +126,9 @@ async def list_mechanics(
         if profile.id not in next_dates:
             continue
 
+        if profile.city_lat is None or profile.city_lng is None:
+            continue
+
         dist = calculate_distance_km(lat, lng, profile.city_lat, profile.city_lng)
         if dist > radius_km or dist > profile.max_radius_km:
             continue
@@ -136,8 +137,8 @@ async def list_mechanics(
             id=profile.id,
             user_id=profile.user_id,
             city=profile.city,
-            city_lat=round(float(profile.city_lat), 2),
-            city_lng=round(float(profile.city_lng), 2),
+            city_lat=round(float(profile.city_lat), 1),
+            city_lng=round(float(profile.city_lng), 1),
             distance_km=round(dist, 1),
             max_radius_km=profile.max_radius_km,
             accepted_vehicle_types=profile.accepted_vehicle_types,
@@ -148,6 +149,8 @@ async def list_mechanics(
             is_identity_verified=profile.is_identity_verified,
             photo_url=profile.photo_url,
             next_available_date=next_dates[profile.id].isoformat(),
+            service_location=profile.service_location,
+            garage_address=profile.garage_address,
         )
         mechanics.append(item)
 
@@ -159,7 +162,9 @@ async def list_mechanics(
 
 
 @router.get("/me/stats")
+@limiter.limit("30/minute")
 async def get_my_stats(
+    request: Request,
     mechanic: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
     db: AsyncSession = Depends(get_db),
 ):
@@ -229,7 +234,9 @@ async def get_my_stats(
 
 
 @router.put("/me", response_model=MechanicDetailResponse)
+@limiter.limit("30/minute")
 async def update_mechanic_profile(
+    request: Request,
     body: MechanicUpdateRequest,
     mechanic: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
     db: AsyncSession = Depends(get_db),
@@ -237,11 +244,13 @@ async def update_mechanic_profile(
     """Update the current mechanic's profile."""
     _, profile = mechanic
 
-    UPDATABLE_FIELDS = {"city", "city_lat", "city_lng", "max_radius_km", "free_zone_km", "accepted_vehicle_types", "has_obd_diagnostic"}
+    UPDATABLE_FIELDS = {"city", "city_lat", "city_lng", "max_radius_km", "free_zone_km", "accepted_vehicle_types", "has_obd_diagnostic", "service_location", "garage_address"}
 
     update_data = body.model_dump(exclude_unset=True)
     if "accepted_vehicle_types" in update_data and update_data["accepted_vehicle_types"] is not None:
         update_data["accepted_vehicle_types"] = [v.value for v in update_data["accepted_vehicle_types"]]
+    if "service_location" in update_data and update_data["service_location"] is not None:
+        update_data["service_location"] = update_data["service_location"].value
 
     for field, value in update_data.items():
         if field in UPDATABLE_FIELDS:
@@ -254,7 +263,9 @@ async def update_mechanic_profile(
 
 
 @router.post("/me/identity", status_code=status.HTTP_200_OK)
+@limiter.limit("10/minute")
 async def upload_identity_documents(
+    request: Request,
     identity_document: UploadFile,
     selfie_with_id: UploadFile,
     cv: UploadFile | None = None,
@@ -289,7 +300,9 @@ async def upload_identity_documents(
 
 
 @router.post("/me/photo", status_code=status.HTTP_200_OK)
+@limiter.limit("10/minute")
 async def upload_profile_photo(
+    request: Request,
     photo: UploadFile,
     mechanic: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
     db: AsyncSession = Depends(get_db),
@@ -307,7 +320,9 @@ async def upload_profile_photo(
 
 
 @router.post("/me/cv", status_code=status.HTTP_200_OK)
+@limiter.limit("10/minute")
 async def upload_cv(
+    request: Request,
     cv: UploadFile,
     mechanic: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
     db: AsyncSession = Depends(get_db),
@@ -326,7 +341,9 @@ async def upload_cv(
 
 
 @router.post("/me/diplomas", status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 async def create_diploma(
+    request: Request,
     name: str = Form(..., max_length=255),
     year: int | None = Form(None),
     document: UploadFile | None = None,
@@ -357,7 +374,9 @@ async def create_diploma(
 
 
 @router.delete("/me/diplomas/{diploma_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("30/minute")
 async def delete_diploma(
+    request: Request,
     diploma_id: uuid.UUID,
     mechanic: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
     db: AsyncSession = Depends(get_db),
@@ -385,7 +404,9 @@ async def delete_diploma(
 
 
 @router.post("/availabilities", response_model=AvailabilityResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("30/minute")
 async def create_availability(
+    request: Request,
     body: AvailabilityCreateRequest,
     mechanic: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
     db: AsyncSession = Depends(get_db),
@@ -403,6 +424,20 @@ async def create_availability(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="End time must be after start time",
+        )
+
+    # AUD-027: Limit unbooked availability slots per mechanic to prevent abuse
+    slot_count_result = await db.execute(
+        select(func.count()).where(
+            Availability.mechanic_id == profile.id,
+            Availability.is_booked == False,
+        )
+    )
+    slot_count = slot_count_result.scalar() or 0
+    if slot_count >= 100:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum 100 unbooked availability slots allowed",
         )
 
     # Check for overlap
@@ -434,18 +469,23 @@ async def create_availability(
 
 
 @router.get("/availabilities", response_model=list[AvailabilityResponse])
+@limiter.limit(LIST_RATE_LIMIT)
 async def list_availabilities(
+    request: Request,
     mechanic_id: uuid.UUID = Query(...),
     date_from: date = Query(...),
     date_to: date = Query(...),
+    limit: int = Query(200, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
     """List available (non-booked) slots for a mechanic in a date range."""
+    if (date_to - date_from).days > 90:
+        raise HTTPException(status_code=400, detail="Date range cannot exceed 90 days")
+
     now = datetime.now(timezone.utc)
     today_date = now.date()
     now_time = now.time()
 
-    from sqlalchemy import or_
     result = await db.execute(
         select(Availability).where(
             Availability.mechanic_id == mechanic_id,
@@ -458,12 +498,15 @@ async def list_availabilities(
                 and_(Availability.date == today_date, Availability.end_time > now_time),
             ),
         ).order_by(Availability.date, Availability.start_time)
+        .limit(limit)
     )
     return [AvailabilityResponse.model_validate(a) for a in result.scalars().all()]
 
 
 @router.delete("/availabilities/{availability_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("30/minute")
 async def delete_availability(
+    request: Request,
     availability_id: uuid.UUID,
     mechanic: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
     db: AsyncSession = Depends(get_db),
@@ -495,7 +538,9 @@ async def delete_availability(
 
 
 @router.get("/{mechanic_id}", response_model=MechanicDetailWithSlots)
+@limiter.limit(LIST_RATE_LIMIT)
 async def get_mechanic(
+    request: Request,
     mechanic_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
@@ -538,7 +583,6 @@ async def get_mechanic(
     now = datetime.now(timezone.utc)
     today = now.date()
     now_time = now.time()
-    from sqlalchemy import or_
     avail_result = await db.execute(
         select(Availability).where(
             Availability.mechanic_id == mechanic_id,
@@ -555,13 +599,15 @@ async def get_mechanic(
         AvailabilityResponse.model_validate(a) for a in avail_result.scalars().all()
     ]
 
+    # R-001: Public endpoint must not expose cv_url (personal document).
+    # has_cv is still returned so the mobile UI can show a badge.
     return MechanicDetailWithSlots(
         profile=MechanicDetailResponse(
             id=profile.id,
             user_id=profile.user_id,
             city=profile.city,
-            city_lat=round(float(profile.city_lat), 2),
-            city_lng=round(float(profile.city_lng), 2),
+            city_lat=round(float(profile.city_lat), 1) if profile.city_lat is not None else None,
+            city_lng=round(float(profile.city_lng), 1) if profile.city_lng is not None else None,
             max_radius_km=profile.max_radius_km,
             free_zone_km=profile.free_zone_km,
             accepted_vehicle_types=profile.accepted_vehicle_types,
@@ -571,7 +617,9 @@ async def get_mechanic(
             has_obd_diagnostic=profile.has_obd_diagnostic,
             is_identity_verified=profile.is_identity_verified,
             photo_url=profile.photo_url,
-            cv_url=profile.cv_url,
+            cv_url=None,
+            service_location=profile.service_location,
+            garage_address=profile.garage_address,
         ),
         reviews=reviews,
         availabilities=availabilities,

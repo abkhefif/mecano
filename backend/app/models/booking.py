@@ -16,16 +16,23 @@ class Booking(Base):
         CheckConstraint("base_price >= 0", name="ck_booking_base_price_positive"),
         CheckConstraint("total_price >= 0", name="ck_booking_total_price_positive"),
         CheckConstraint("commission_rate >= 0 AND commission_rate <= 1", name="ck_booking_commission_rate_range"),
+        CheckConstraint(
+            "cancelled_by IN ('buyer', 'mechanic') OR cancelled_by IS NULL",
+            name="ck_booking_cancelled_by",
+        ),
         Index("ix_booking_buyer_created", "buyer_id", "created_at"),
         Index("ix_booking_mechanic_created", "mechanic_id", "created_at"),
+        # PERF-005: Composite index for scheduler queries filtering on (status, updated_at)
+        Index("ix_booking_status_updated", "status", "updated_at"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    # ARCH-007: RESTRICT prevents accidental cascade deletion of financial records
     buyer_id: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+        GUID(), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     mechanic_id: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("mechanic_profiles.id", ondelete="CASCADE"), nullable=False, index=True
+        GUID(), ForeignKey("mechanic_profiles.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     availability_id: Mapped[uuid.UUID | None] = mapped_column(
         GUID(), ForeignKey("availabilities.id", ondelete="SET NULL"), nullable=True, index=True
@@ -47,7 +54,7 @@ class Booking(Base):
     commission_rate: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
     commission_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     mechanic_payout: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
-    stripe_payment_intent_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
+    stripe_payment_intent_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
     check_in_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
     check_in_code_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     check_in_code_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

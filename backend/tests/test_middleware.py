@@ -28,4 +28,5 @@ async def test_security_headers_middleware():
     assert response.headers["X-Frame-Options"] == "DENY"
     assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
     assert "max-age=31536000" in response.headers["Strict-Transport-Security"]
-    assert response.headers["Content-Security-Policy"] == "default-src 'self'"
+    # R-005: CSP header removed — unnecessary for a JSON API
+    assert "Content-Security-Policy" not in response.headers

@@ -130,6 +130,8 @@ async def test_upload_file_bytes_with_r2():
 
 def test_get_s3_client_without_endpoint():
     """Test get_s3_client when R2_ENDPOINT_URL is empty."""
+    import app.services.storage as storage_mod
+    storage_mod._s3_client = None  # Reset cached client
     with patch("app.services.storage.settings") as mock_settings, \
          patch("app.services.storage.boto3") as mock_boto3:
         mock_settings.R2_ENDPOINT_URL = ""
@@ -140,10 +142,13 @@ def test_get_s3_client_without_endpoint():
 
         call_kwargs = mock_boto3.client.call_args[1]
         assert "endpoint_url" not in call_kwargs
+    storage_mod._s3_client = None  # Clean up
 
 
 def test_get_s3_client_with_endpoint():
     """Test get_s3_client when R2_ENDPOINT_URL is set."""
+    import app.services.storage as storage_mod
+    storage_mod._s3_client = None  # Reset cached client
     with patch("app.services.storage.settings") as mock_settings, \
          patch("app.services.storage.boto3") as mock_boto3:
         mock_settings.R2_ENDPOINT_URL = "https://r2.example.com"
@@ -154,6 +159,7 @@ def test_get_s3_client_with_endpoint():
 
         call_kwargs = mock_boto3.client.call_args[1]
         assert call_kwargs["endpoint_url"] == "https://r2.example.com"
+    storage_mod._s3_client = None  # Clean up
 
 
 # ============ stripe_service.py tests ============
@@ -235,7 +241,7 @@ async def test_cancel_payment_intent_with_stripe():
         mock_settings.STRIPE_SECRET_KEY = "sk_test_123"
 
         await cancel_payment_intent("pi_real_123")
-        mock_stripe.PaymentIntent.cancel.assert_called_once_with("pi_real_123")
+        mock_stripe.PaymentIntent.cancel.assert_called_once_with("pi_real_123", api_key="sk_test_123")
 
 
 @pytest.mark.asyncio
@@ -246,13 +252,48 @@ async def test_capture_payment_intent_dev_mode():
 
 @pytest.mark.asyncio
 async def test_capture_payment_intent_with_stripe():
-    """Test capture when Stripe is configured."""
+    """Test capture when Stripe is configured and PI is in requires_capture state."""
+    mock_intent = MagicMock()
+    mock_intent.status = "requires_capture"
+
     with patch("app.services.stripe_service.settings") as mock_settings, \
          patch("app.services.stripe_service.stripe") as mock_stripe:
         mock_settings.STRIPE_SECRET_KEY = "sk_test_123"
+        mock_stripe.PaymentIntent.retrieve.return_value = mock_intent
 
         await capture_payment_intent("pi_real_123")
-        mock_stripe.PaymentIntent.capture.assert_called_once_with("pi_real_123")
+        mock_stripe.PaymentIntent.retrieve.assert_called_once_with("pi_real_123", api_key="sk_test_123")
+        mock_stripe.PaymentIntent.capture.assert_called_once_with("pi_real_123", api_key="sk_test_123")
+
+
+@pytest.mark.asyncio
+async def test_capture_payment_intent_already_succeeded():
+    """AUD4-002: capture is a no-op when PI is already succeeded."""
+    mock_intent = MagicMock()
+    mock_intent.status = "succeeded"
+
+    with patch("app.services.stripe_service.settings") as mock_settings, \
+         patch("app.services.stripe_service.stripe") as mock_stripe:
+        mock_settings.STRIPE_SECRET_KEY = "sk_test_123"
+        mock_stripe.PaymentIntent.retrieve.return_value = mock_intent
+
+        await capture_payment_intent("pi_real_123")
+        mock_stripe.PaymentIntent.capture.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_capture_payment_intent_unexpected_status():
+    """AUD4-002: capture is a no-op when PI is in unexpected state (e.g. canceled)."""
+    mock_intent = MagicMock()
+    mock_intent.status = "canceled"
+
+    with patch("app.services.stripe_service.settings") as mock_settings, \
+         patch("app.services.stripe_service.stripe") as mock_stripe:
+        mock_settings.STRIPE_SECRET_KEY = "sk_test_123"
+        mock_stripe.PaymentIntent.retrieve.return_value = mock_intent
+
+        await capture_payment_intent("pi_real_123")
+        mock_stripe.PaymentIntent.capture.assert_not_called()
 
 
 @pytest.mark.asyncio

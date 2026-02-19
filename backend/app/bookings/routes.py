@@ -1,14 +1,16 @@
+import asyncio
 import hmac
 import json
 import uuid
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
-from typing import Any, TypedDict
+from typing import Any
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile, status
+from starlette.responses import Response
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -44,7 +46,12 @@ from app.services.notifications import create_notification
 from app.services.pricing import calculate_booking_pricing
 from app.services.scheduler import schedule_payment_release
 from app.services.storage import upload_file
-from app.services.stripe_service import cancel_payment_intent, create_payment_intent, refund_payment_intent
+from app.services.stripe_service import (
+    StripeServiceError,
+    cancel_payment_intent,
+    create_payment_intent,
+    refund_payment_intent,
+)
 from app.config import settings
 from app.utils.code_generator import generate_check_in_code
 from app.utils.display_name import get_display_name
@@ -56,18 +63,10 @@ logger = structlog.get_logger()
 router = APIRouter()
 
 MAX_CODE_ATTEMPTS = settings.MAX_CHECK_IN_CODE_ATTEMPTS
-
-
-class SerializedBooking(TypedDict, total=False):
-    """Shape returned by _serialize_booking. Includes base schema fields plus
-    dynamically added slot/contact/refuse fields. Keys depend on the user role
-    and booking state; ``total=False`` reflects that optional keys may be absent."""
-    slot_date: str
-    slot_start_time: str
-    slot_end_time: str
-    refuse_reason: str | None
-    proposed_time: str | None
-    contact_phone: str | None
+# QC-005: Named constant for the no-show GPS proximity threshold
+NO_SHOW_DISTANCE_THRESHOLD_KM = 0.5
+# QC-006: Named constant for check-in code expiry duration
+CHECK_IN_CODE_EXPIRY_SECONDS = 15 * 60
 
 
 def _serialize_booking(booking: "Booking", role: UserRole) -> dict[str, Any]:
@@ -91,6 +90,13 @@ def _serialize_booking(booking: "Booking", role: UserRole) -> dict[str, Any]:
 
     # Add review presence flag (reviews is eagerly loaded)
     data["has_review"] = len(booking.reviews) > 0 if booking.reviews else False
+
+    # R-002: Mask vehicle_plate for mechanics on terminal bookings
+    # (privacy: plate should not remain visible after the service is done)
+    if role == UserRole.MECHANIC and booking.status in (
+        BookingStatus.COMPLETED, BookingStatus.CANCELLED
+    ):
+        data["vehicle_plate"] = None
 
     # Add contact phone when booking is CONFIRMED and close to appointment
     if booking.status == BookingStatus.CONFIRMED and booking.availability:
@@ -143,6 +149,19 @@ async def create_booking(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This slot is already booked")
 
     SLOT_DURATION_MINUTES = settings.BOOKING_SLOT_DURATION_MINUTES
+
+    # Check booking is sufficiently in the future BEFORE any availability split
+    # so that a rejected booking doesn't leave orphaned split slots.
+    _check_start = (
+        time.fromisoformat(body.slot_start_time) if body.slot_start_time
+        else availability.start_time
+    )
+    _check_datetime = datetime.combine(availability.date, _check_start, tzinfo=timezone.utc)
+    if _check_datetime - datetime.now(timezone.utc) < timedelta(hours=settings.BOOKING_MINIMUM_ADVANCE_HOURS):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Booking must be at least {settings.BOOKING_MINIMUM_ADVANCE_HOURS} hours in advance",
+        )
 
     # If buyer chose a sub-slot within a larger availability window, split it
     booked_slot = availability  # by default, book the whole slot
@@ -220,14 +239,6 @@ async def create_booking(
                 chosen_time=body.slot_start_time,
             )
 
-    # Check booking is sufficiently in the future
-    slot_datetime = datetime.combine(booked_slot.date, booked_slot.start_time, tzinfo=timezone.utc)
-    if slot_datetime - datetime.now(timezone.utc) < timedelta(hours=settings.BOOKING_MINIMUM_ADVANCE_HOURS):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Booking must be at least {settings.BOOKING_MINIMUM_ADVANCE_HOURS} hours in advance",
-        )
-
     # Fetch mechanic profile
     mech_result = await db.execute(
         select(MechanicProfile).where(MechanicProfile.id == body.mechanic_id)
@@ -236,8 +247,18 @@ async def create_booking(
     if not mechanic:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mechanic not found")
 
+    # BUG-006: Prevent buyer from booking their own services
+    if mechanic.user_id == buyer.id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot book your own services")
+
     if not mechanic.is_identity_verified:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mechanic not verified")
+
+    # AUD-006: Verify mechanic is active and not suspended
+    if not mechanic.is_active:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mechanic is not currently active")
+    if mechanic.suspended_until and mechanic.suspended_until > datetime.now(timezone.utc):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mechanic is currently suspended")
 
     if booked_slot.mechanic_id != mechanic.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Slot does not belong to this mechanic")
@@ -252,6 +273,13 @@ async def create_booking(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="This mechanic does not offer OBD diagnostic service",
+        )
+
+    # R-008: Guard against NULL mechanic coordinates
+    if mechanic.city_lat is None or mechanic.city_lng is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mechanic has not set their service location",
         )
 
     # Calculate distance and pricing
@@ -275,14 +303,15 @@ async def create_booking(
         )
 
     # Create Stripe PaymentIntent
-    amount_cents = int(pricing["total_price"] * 100)
-    commission_cents = int(pricing["commission_amount"] * 100)
+    amount_cents = int(round(pricing["total_price"] * 100))
+    commission_cents = int(round(pricing["commission_amount"] * 100))
 
     intent = await create_payment_intent(
         amount_cents=amount_cents,
         mechanic_stripe_account_id=mechanic.stripe_account_id,
         commission_cents=commission_cents,
         metadata={"buyer_id": str(buyer.id), "mechanic_id": str(mechanic.id)},
+        idempotency_key=f"booking_{buyer.id}_{amount_cents}_{body.availability_id}",
     )
 
     # Create booking -- with compensating Stripe cancellation on DB failure
@@ -319,7 +348,6 @@ async def create_booking(
 
         # Find overlapping unbooked slots within the buffer zone on the same day
         # Trim them instead of marking entirely as booked
-        from sqlalchemy import and_
         # Use skip_locked=True for buffer slots: if another transaction already
         # holds the lock on an adjacent slot, skip it rather than deadlocking.
         # Skipped slots will be handled by the next booking attempt or cron job.
@@ -387,8 +415,10 @@ async def create_booking(
         data={"booking_id": str(booking.id)},
     )
 
+    # F-009: Use BookingBuyerResponse to hide commission_amount/mechanic_payout
+    # from the buyer who creates the booking.
     return BookingCreateResponse(
-        booking=BookingResponse.model_validate(booking),
+        booking=BookingBuyerResponse.model_validate(booking),
         client_secret=intent["client_secret"],
     )
 
@@ -403,12 +433,16 @@ async def accept_booking(
 ):
     """Accept a pending booking (mechanic only)."""
     _, profile = mechanic
-    booking = await _get_booking(db, booking_id)
+    booking = await _get_booking(db, booking_id, lock=True)
 
     if booking.mechanic_id != profile.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your booking")
 
     validate_transition(booking.status, BookingStatus.CONFIRMED, action="accept")
+
+    # AUD-015: Verify the booking has a payment intent before accepting
+    if not booking.stripe_payment_intent_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Booking has no payment associated")
 
     booking.status = BookingStatus.CONFIRMED
     booking.confirmed_at = datetime.now(timezone.utc)
@@ -439,7 +473,7 @@ async def refuse_booking(
 ):
     """Refuse a pending booking (mechanic only). Triggers full refund."""
     _, profile = mechanic
-    booking = await _get_booking(db, booking_id)
+    booking = await _get_booking(db, booking_id, lock=True)
 
     if booking.mechanic_id != profile.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your booking")
@@ -455,7 +489,10 @@ async def refuse_booking(
     refund_amount = booking.total_price
 
     if booking.stripe_payment_intent_id:
-        await cancel_payment_intent(booking.stripe_payment_intent_id)
+        try:
+            await cancel_payment_intent(booking.stripe_payment_intent_id)
+        except StripeServiceError as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
     booking.status = BookingStatus.CANCELLED
     booking.cancelled_at = datetime.now(timezone.utc)
@@ -498,8 +535,14 @@ async def cancel_booking(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Cancel a booking (buyer or mechanic). Applies refund policy based on time to appointment."""
-    booking = await _get_booking(db, booking_id)
+    """Cancel a booking (buyer or mechanic). Applies refund policy based on time to appointment.
+
+    F-012: A suspended mechanic is still allowed to cancel their bookings
+    (to not leave buyers stranded). The suspension check in get_current_user
+    does not apply here because this endpoint uses get_current_user (not
+    get_current_mechanic), which does not enforce the suspension guard.
+    """
+    booking = await _get_booking(db, booking_id, lock=True)
 
     # Determine who is cancelling
     if user.role == UserRole.BUYER:
@@ -541,13 +584,16 @@ async def cancel_booking(
 
     # Issue Stripe refund or cancellation
     if booking.stripe_payment_intent_id:
-        if refund_pct == 100:
-            # Full refund — cancel the payment intent (works for uncaptured and captured)
-            await cancel_payment_intent(booking.stripe_payment_intent_id)
-        elif refund_pct > 0:
-            # Partial refund
-            refund_cents = int(refund_amount * 100)
-            await refund_payment_intent(booking.stripe_payment_intent_id, amount_cents=refund_cents)
+        try:
+            if refund_pct == 100:
+                # Full refund — cancel the payment intent (works for uncaptured and captured)
+                await cancel_payment_intent(booking.stripe_payment_intent_id)
+            elif refund_pct > 0:
+                # Partial refund
+                refund_cents = int(refund_amount * 100)
+                await refund_payment_intent(booking.stripe_payment_intent_id, amount_cents=refund_cents)
+        except StripeServiceError as e:
+            raise HTTPException(status_code=500, detail=str(e))
         # refund_pct == 0: no refund, no Stripe action needed
 
     booking.status = BookingStatus.CANCELLED
@@ -600,11 +646,11 @@ async def check_in(
     request: Request,
     booking_id: uuid.UUID,
     body: CheckInRequest,
-    buyer: User = Depends(get_current_buyer),
+    buyer: User = Depends(get_verified_buyer),
     db: AsyncSession = Depends(get_db),
 ):
     """Buyer confirms mechanic presence and generates a 4-digit code."""
-    booking = await _get_booking(db, booking_id)
+    booking = await _get_booking(db, booking_id, lock=True)
 
     if booking.buyer_id != buyer.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your booking")
@@ -640,6 +686,9 @@ async def check_in(
         logger.info("check_in_code_generated", booking_id=str(booking.id))
         return CheckInResponse(check_in_code=code)
     else:
+        # BUG-004: Explicit state machine validation for no-show path
+        validate_transition(booking.status, BookingStatus.DISPUTED, action="report no-show")
+
         # H-01: No-show dispute protection — check mechanic's last known GPS
         # If mechanic is near the meeting point (within 500m), warn the buyer
         mechanic_nearby = False
@@ -650,7 +699,7 @@ async def check_in(
                 float(booking.meeting_lat),
                 float(booking.meeting_lng),
             )
-            if distance <= 0.5:  # 500 meters
+            if distance <= NO_SHOW_DISTANCE_THRESHOLD_KM:
                 mechanic_nearby = True
                 logger.warning(
                     "no_show_dispute_mechanic_nearby",
@@ -698,7 +747,8 @@ async def enter_code(
 ):
     """Mechanic enters the 4-digit code to confirm physical presence."""
     _, profile = mechanic
-    booking = await _get_booking(db, booking_id)
+    # R-001: Acquire row lock to prevent concurrent code entry race conditions
+    booking = await _get_booking(db, booking_id, lock=True)
 
     if booking.mechanic_id != profile.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your booking")
@@ -708,7 +758,7 @@ async def enter_code(
     # Code expiry check (15 minutes)
     if booking.check_in_code_generated_at:
         elapsed = (datetime.now(timezone.utc) - booking.check_in_code_generated_at).total_seconds()
-        if elapsed > 15 * 60:
+        if elapsed > CHECK_IN_CODE_EXPIRY_SECONDS:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Code has expired. Please ask the buyer to generate a new code.",
@@ -716,6 +766,11 @@ async def enter_code(
 
     # Brute-force protection
     if booking.check_in_code_attempts >= MAX_CODE_ATTEMPTS:
+        logger.warning(
+            "check_in_code_max_attempts_reached",
+            booking_id=str(booking.id),
+            attempts=booking.check_in_code_attempts,
+        )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too many failed attempts. Please ask the buyer to generate a new code.",
@@ -744,21 +799,26 @@ async def enter_code(
 
 
 @router.patch("/{booking_id}/check-out", response_model=CheckOutResponse)
+@limiter.limit("10/hour")
 async def check_out(
+    request: Request,
     booking_id: uuid.UUID,
     photo_plate: UploadFile,
     photo_odometer: UploadFile,
-    entered_odometer_km: int,
-    checklist_json: str,
-    entered_plate: str | None = None,
-    gps_lat: float | None = None,
-    gps_lng: float | None = None,
+    entered_odometer_km: int = Form(...),
+    checklist_json: str = Form(...),
+    entered_plate: str | None = Form(None),
+    gps_lat: float | None = Form(None),
+    gps_lng: float | None = Form(None),
+    additional_photos: list[UploadFile] | None = None,
     mechanic: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
     db: AsyncSession = Depends(get_db),
 ):
     """Mechanic submits inspection results, photos, and checklist. Generates PDF report."""
+    additional_photos = additional_photos or []
     user, profile = mechanic
-    booking = await _get_booking(db, booking_id)
+    # I-004: Acquire row lock to prevent concurrent check-out submissions
+    booking = await _get_booking(db, booking_id, lock=True)
 
     if booking.mechanic_id != profile.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your booking")
@@ -774,6 +834,11 @@ async def check_out(
 
     # Fall back to booking's vehicle_plate when mechanic didn't enter a plate
     effective_plate = entered_plate if entered_plate else booking.vehicle_plate
+    if not effective_plate:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Vehicle plate is required",
+        )
     if entered_odometer_km < 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -798,15 +863,63 @@ async def check_out(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON")
     except ValidationError as e:
         logger.error("checklist_validation_error", booking_id=str(booking.id), error=str(e))
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Donnees invalides")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid data")
 
-    # Upload photos
+    # Validate additional photos count (max 10)
+    if len(additional_photos) > 10:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Maximum 10 additional photos allowed",
+        )
+
+    # Upload photos -- track all uploaded URLs so we can clean up orphans on failure
+    uploaded_urls: list[str] = []
     try:
         plate_url = await upload_file(photo_plate, "proofs")
+        uploaded_urls.append(plate_url)
         odometer_url = await upload_file(photo_odometer, "proofs")
+        uploaded_urls.append(odometer_url)
+
+        # PERF-001: Upload additional photos concurrently instead of sequentially
+        additional_photo_urls: list[str] = []
+        if additional_photos:
+            additional_photo_urls = await asyncio.gather(
+                *[upload_file(photo, "proofs") for photo in additional_photos]
+            )
+            uploaded_urls.extend(additional_photo_urls)
     except ValueError as e:
+        # Log orphaned files that were uploaded before the failure
+        if uploaded_urls:
+            logger.warning(
+                "orphaned_files_on_upload_failure",
+                booking_id=str(booking.id),
+                orphaned_urls=uploaded_urls,
+                error=str(e),
+            )
         logger.error("upload_validation_failed", booking_id=str(booking.id), error=str(e))
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Donnees invalides")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid data")
+    except Exception as e:
+        # Unexpected upload error -- log orphaned files before re-raising
+        if uploaded_urls:
+            logger.warning(
+                "orphaned_files_on_upload_failure",
+                booking_id=str(booking.id),
+                orphaned_urls=uploaded_urls,
+                error=str(e),
+            )
+        raise
+
+    # AUD-007: Check if inspection checklist already exists (idempotency)
+    existing_inspection = await db.execute(
+        select(InspectionChecklist).where(InspectionChecklist.booking_id == booking.id)
+    )
+    if existing_inspection.scalar_one_or_none():
+        existing_report = await db.execute(
+            select(Report).where(Report.booking_id == booking.id)
+        )
+        report = existing_report.scalar_one_or_none()
+        if report:
+            return CheckOutResponse(pdf_url=report.pdf_url)
 
     # Check if validation proof already exists (idempotency)
     existing_proof_result = await db.execute(
@@ -826,6 +939,7 @@ async def check_out(
             entered_odometer_km=entered_odometer_km,
             gps_lat=gps_lat,
             gps_lng=gps_lng,
+            additional_photo_urls=additional_photo_urls if additional_photo_urls else None,
             uploaded_by=UploadedBy.MECHANIC,
         )
         db.add(proof)
@@ -840,7 +954,10 @@ async def check_out(
     # so that if PDF fails, we haven't saved partial data
     try:
         mechanic_name = get_display_name(user)
-        pdf_url = await generate_pdf(booking, proof, inspection, mechanic_name)
+        pdf_url = await generate_pdf(
+            booking, proof, inspection, mechanic_name,
+            additional_photo_urls=additional_photo_urls if additional_photo_urls else None,
+        )
     except Exception as e:
         logger.error("pdf_generation_failed", booking_id=str(booking.id), error=str(e))
         raise HTTPException(
@@ -876,7 +993,7 @@ async def validate_booking(
     request: Request,
     booking_id: uuid.UUID,
     body: ValidateRequest,
-    buyer: User = Depends(get_current_buyer),
+    buyer: User = Depends(get_verified_buyer),
     db: AsyncSession = Depends(get_db),
 ):
     """Buyer validates the inspection results, triggering payment release.
@@ -884,7 +1001,7 @@ async def validate_booking(
     This JSON endpoint is kept for backward compatibility (no photos).
     For dispute submissions with photo evidence, use the /validate-with-photos endpoint.
     """
-    booking = await _get_booking(db, booking_id)
+    booking = await _get_booking(db, booking_id, lock=True)
 
     if booking.buyer_id != buyer.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your booking")
@@ -900,6 +1017,13 @@ async def validate_booking(
         logger.info("booking_validated", booking_id=str(booking.id))
         return {"status": "validated", "payment_release": "scheduled in 2 hours"}
     else:
+        # AUD-H07: Check for existing dispute before creating a new one
+        existing_dispute = await db.execute(
+            select(DisputeCase).where(DisputeCase.booking_id == booking.id)
+        )
+        if existing_dispute.scalar_one_or_none():
+            raise HTTPException(status.HTTP_409_CONFLICT, "A dispute already exists for this booking")
+
         dispute = DisputeCase(
             booking_id=booking.id,
             opened_by=buyer.id,
@@ -931,11 +1055,11 @@ async def validate_booking(
 async def validate_booking_with_photos(
     request: Request,
     booking_id: uuid.UUID,
-    validated: bool,
-    problem_reason: str | None = None,
-    problem_description: str | None = None,
+    validated: bool = Form(...),
+    problem_reason: str | None = Form(None),
+    problem_description: str | None = Form(None),
     photos: list[UploadFile] | None = None,
-    buyer: User = Depends(get_current_buyer),
+    buyer: User = Depends(get_verified_buyer),
     db: AsyncSession = Depends(get_db),
 ):
     """Buyer validates or disputes with optional photo evidence (FormData endpoint).
@@ -946,7 +1070,7 @@ async def validate_booking_with_photos(
     - problem_description (str): Required when validated=False. Free-text description (max 1000 chars).
     - photos (files): Optional, up to 5 JPEG/PNG images as evidence for the dispute.
     """
-    booking = await _get_booking(db, booking_id)
+    booking = await _get_booking(db, booking_id, lock=True)
 
     if booking.buyer_id != buyer.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your booking")
@@ -984,8 +1108,15 @@ async def validate_booking_with_photos(
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid dispute reason: {problem_reason}",
+                detail="Invalid dispute reason. Must be one of: no_show, wrong_info, rude_behavior, other",
             )
+
+        # AUD-H07: Check for existing dispute before creating a new one
+        existing_dispute = await db.execute(
+            select(DisputeCase).where(DisputeCase.booking_id == booking.id)
+        )
+        if existing_dispute.scalar_one_or_none():
+            raise HTTPException(status.HTTP_409_CONFLICT, "A dispute already exists for this booking")
 
         # Upload dispute photos (max 5)
         photo_urls: list[str] = []
@@ -1055,16 +1186,23 @@ async def validate_booking_with_photos(
 @limiter.limit(LIST_RATE_LIMIT)
 async def list_my_bookings(
     request: Request,
+    response: Response,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=10000),
 ):
-    """List all bookings for the current user (buyer, mechanic, or admin)."""
+    """List all bookings for the current user (buyer, mechanic, or admin).
+
+    AUD-M04: The X-Total-Count response header contains the total number of
+    bookings matching the query (before pagination), so the mobile app can
+    display pagination controls without changing the JSON response format.
+    """
     if user.role == UserRole.BUYER:
+        base_filter = Booking.buyer_id == user.id
         result = await db.execute(
             select(Booking)
-            .where(Booking.buyer_id == user.id)
+            .where(base_filter)
             .options(
                 selectinload(Booking.buyer),
                 selectinload(Booking.mechanic).selectinload(MechanicProfile.user),
@@ -1075,6 +1213,10 @@ async def list_my_bookings(
             .limit(limit)
             .offset(offset)
         )
+        # AUD-M04: Total count for pagination header
+        total = (await db.execute(
+            select(func.count()).select_from(select(Booking.id).where(base_filter).subquery())
+        )).scalar() or 0
     elif user.role == UserRole.ADMIN:
         # Admin sees all bookings
         result = await db.execute(
@@ -1089,6 +1231,9 @@ async def list_my_bookings(
             .limit(limit)
             .offset(offset)
         )
+        total = (await db.execute(
+            select(func.count()).select_from(select(Booking.id).subquery())
+        )).scalar() or 0
     else:
         # Mechanic
         profile_result = await db.execute(
@@ -1096,11 +1241,13 @@ async def list_my_bookings(
         )
         profile = profile_result.scalar_one_or_none()
         if not profile:
+            response.headers["X-Total-Count"] = "0"
             return []
 
+        base_filter = Booking.mechanic_id == profile.id
         result = await db.execute(
             select(Booking)
-            .where(Booking.mechanic_id == profile.id)
+            .where(base_filter)
             .options(
                 selectinload(Booking.buyer),
                 selectinload(Booking.mechanic).selectinload(MechanicProfile.user),
@@ -1111,12 +1258,18 @@ async def list_my_bookings(
             .limit(limit)
             .offset(offset)
         )
+        total = (await db.execute(
+            select(func.count()).select_from(select(Booking.id).where(base_filter).subquery())
+        )).scalar() or 0
 
+    response.headers["X-Total-Count"] = str(total)
     return [_serialize_booking(b, user.role) for b in result.scalars().all()]
 
 
 @router.get("/{booking_id}")
+@limiter.limit("60/minute")
 async def get_booking(
+    request: Request,
     booking_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1197,7 +1350,9 @@ async def update_location(
 
 
 @router.get("/{booking_id}/location")
+@limiter.limit("120/minute")
 async def get_location(
+    request: Request,
     booking_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1221,9 +1376,21 @@ async def get_location(
     }
 
 
-async def _get_booking(db: AsyncSession, booking_id: uuid.UUID) -> Booking:
-    """Fetch a booking by ID or raise 404. Eagerly loads relationships used by route handlers."""
-    result = await db.execute(
+async def _get_booking(db: AsyncSession, booking_id: uuid.UUID, lock: bool = False) -> Booking:
+    """Fetch a booking by ID or raise 404. Eagerly loads relationships used by route handlers.
+
+    Args:
+        lock: If True, acquire a row-level lock (SELECT FOR UPDATE) to prevent
+              concurrent modifications (e.g. validate + dispute race condition).
+    """
+    # NOTE: with_for_update() locks only the bookings row, not related rows
+    # loaded via selectinload (availability, mechanic, buyer). For endpoints
+    # that modify availability.is_booked (cancel, refuse), there is a theoretical
+    # race with concurrent create_booking. Mitigated by: (1) booking state machine
+    # prevents invalid transitions, (2) low probability of exact same slot being
+    # cancelled and rebooked simultaneously. Fixing with joinedload or separate
+    # FOR UPDATE on availability would risk deadlocks due to lock ordering.
+    stmt = (
         select(Booking)
         .where(Booking.id == booking_id)
         .options(
@@ -1233,6 +1400,9 @@ async def _get_booking(db: AsyncSession, booking_id: uuid.UUID) -> Booking:
             selectinload(Booking.reviews),
         )
     )
+    if lock:
+        stmt = stmt.with_for_update()
+    result = await db.execute(stmt)
     booking = result.scalar_one_or_none()
     if not booking:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")

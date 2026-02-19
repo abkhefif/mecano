@@ -6,6 +6,13 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from app.models.enums import UserRole
 
 
+def validate_password_complexity(password: str) -> str:
+    """Validate password contains at least one uppercase, one lowercase, and one digit."""
+    if not any(c.isupper() for c in password) or not any(c.islower() for c in password) or not any(c.isdigit() for c in password):
+        raise ValueError("Le mot de passe doit contenir au moins une majuscule, une minuscule et un chiffre")
+    return password
+
+
 class RegistrationRole(str, Enum):
     BUYER = "buyer"
     MECHANIC = "mechanic"
@@ -18,17 +25,19 @@ class RegisterRequest(BaseModel):
     first_name: str | None = Field(None, max_length=100)
     last_name: str | None = Field(None, max_length=100)
     phone: str | None = Field(None, pattern=r"^\+?[0-9]{10,15}$")
-    referral_code: str | None = None
+    referral_code: str | None = Field(None, max_length=30)
+    cgu_accepted: bool = Field(False, validate_default=True)
 
     @field_validator("password")
     @classmethod
     def password_complexity(cls, v: str) -> str:
-        if not any(c.isupper() for c in v):
-            raise ValueError("Le mot de passe doit contenir au moins une majuscule")
-        if not any(c.islower() for c in v):
-            raise ValueError("Le mot de passe doit contenir au moins une minuscule")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Le mot de passe doit contenir au moins un chiffre")
+        return validate_password_complexity(v)
+
+    @field_validator("cgu_accepted")
+    @classmethod
+    def cgu_must_be_accepted(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError("Vous devez accepter les CGU pour créer un compte")
         return v
 
 
@@ -63,8 +72,8 @@ class UserResponse(BaseModel):
 class MechanicProfileResponse(BaseModel):
     id: uuid.UUID
     city: str
-    city_lat: float
-    city_lng: float
+    city_lat: float | None = None
+    city_lng: float | None = None
     max_radius_km: int
     free_zone_km: int
     accepted_vehicle_types: list[str]
@@ -94,6 +103,14 @@ class UserWithProfileResponse(UserResponse):
 class PushTokenRequest(BaseModel):
     token: str = Field(max_length=100)
 
+    @field_validator("token")
+    @classmethod
+    def validate_expo_token_format(cls, v: str) -> str:
+        import re
+        if not re.match(r"^ExponentPushToken\[.+\]$", v):
+            raise ValueError("Token must be a valid Expo push token (ExponentPushToken[...])")
+        return v
+
 
 class EmailVerifyRequest(BaseModel):
     token: str
@@ -118,13 +135,7 @@ class ResetPasswordRequest(BaseModel):
     @field_validator("new_password")
     @classmethod
     def password_complexity(cls, v: str) -> str:
-        if not any(c.isupper() for c in v):
-            raise ValueError("Le mot de passe doit contenir au moins une majuscule")
-        if not any(c.islower() for c in v):
-            raise ValueError("Le mot de passe doit contenir au moins une minuscule")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Le mot de passe doit contenir au moins un chiffre")
-        return v
+        return validate_password_complexity(v)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -134,13 +145,7 @@ class ChangePasswordRequest(BaseModel):
     @field_validator("new_password")
     @classmethod
     def password_complexity(cls, v: str) -> str:
-        if not any(c.isupper() for c in v):
-            raise ValueError("Le mot de passe doit contenir au moins une majuscule")
-        if not any(c.islower() for c in v):
-            raise ValueError("Le mot de passe doit contenir au moins une minuscule")
-        if not any(c.isdigit() for c in v):
-            raise ValueError("Le mot de passe doit contenir au moins un chiffre")
-        return v
+        return validate_password_complexity(v)
 
 
 class MessageResponse(BaseModel):

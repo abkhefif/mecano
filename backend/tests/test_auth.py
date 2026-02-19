@@ -15,6 +15,7 @@ async def test_register_buyer(client: AsyncClient):
             "password": "SecurePass123",
             "role": "buyer",
             "phone": "+33600000010",
+            "cgu_accepted": True,
         },
     )
     assert response.status_code == 201
@@ -31,6 +32,7 @@ async def test_register_mechanic(client: AsyncClient):
             "email": "newmechanic@test.com",
             "password": "SecurePass123",
             "role": "mechanic",
+            "cgu_accepted": True,
         },
     )
     assert response.status_code == 201
@@ -46,9 +48,12 @@ async def test_register_duplicate_email(client: AsyncClient, buyer_user: User):
             "email": "buyer@test.com",
             "password": "SecurePass123",
             "role": "buyer",
+            "cgu_accepted": True,
         },
     )
-    assert response.status_code == 409
+    # H-02: Don't reveal email existence - return same 201 as success
+    assert response.status_code == 201
+    assert "message" in response.json()
 
 
 @pytest.mark.asyncio
@@ -147,6 +152,7 @@ async def test_register_mechanic_creates_profile(client: AsyncClient):
             "password": "SecurePass123",
             "role": "mechanic",
             "phone": "+33600000999",
+            "cgu_accepted": True,
         },
     )
     assert response.status_code == 201
@@ -172,6 +178,7 @@ async def test_register_buyer_with_phone(client: AsyncClient):
             "password": "SecurePass123",
             "role": "buyer",
             "phone": "+33600000888",
+            "cgu_accepted": True,
         },
     )
     assert response.status_code == 201

@@ -20,6 +20,7 @@ from app.schemas.payment import DashboardLinkResponse, DisputeResolveRequest, On
 from app.utils.booking_state import validate_transition
 from app.utils.rate_limit import limiter
 from app.services.stripe_service import (
+    StripeServiceError,
     cancel_payment_intent,
     capture_payment_intent,
     create_connect_account,
@@ -56,7 +57,9 @@ async def onboard_mechanic(
 
 
 @router.get("/mechanic-dashboard", response_model=DashboardLinkResponse)
+@limiter.limit("30/minute")
 async def mechanic_dashboard(
+    request: Request,
     mechanic: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
 ):
     """Get a Stripe Express Dashboard login link."""
@@ -76,12 +79,24 @@ async def mechanic_dashboard(
 @limiter.limit("100/minute")
 async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     """Handle Stripe webhook events."""
+    # R-004: Reject oversized webhook payloads before reading the body
+    MAX_WEBHOOK_PAYLOAD_BYTES = 65_536  # 64 KB
+    content_length = request.headers.get("content-length")
+    try:
+        if content_length and int(content_length) > MAX_WEBHOOK_PAYLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Payload too large")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid Content-Length header")
+
     payload = await request.body()
+    if len(payload) > MAX_WEBHOOK_PAYLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Payload too large")
+
     sig_header = request.headers.get("stripe-signature", "")
 
     try:
         event = verify_webhook_signature(payload, sig_header)
-    except stripe.error.SignatureVerificationError as e:
+    except stripe.SignatureVerificationError as e:
         logger.error("stripe_webhook_signature_failed", error=str(e))
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid signature")
 
@@ -107,8 +122,11 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         # Acts as redundant confirmation alongside the scheduler.
         intent = event["data"]["object"]
         intent_id = intent["id"]
+        # AUD4-005: Use FOR UPDATE to prevent race with scheduler's release_payment
         result = await db.execute(
-            select(Booking).where(Booking.stripe_payment_intent_id == intent_id)
+            select(Booking)
+            .where(Booking.stripe_payment_intent_id == intent_id)
+            .with_for_update(skip_locked=True)
         )
         booking = result.scalar_one_or_none()
         if booking:
@@ -144,6 +162,8 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         if booking and booking.status == BookingStatus.PENDING_ACCEPTANCE:
             booking.status = BookingStatus.CANCELLED
             booking.cancelled_at = datetime.now(timezone.utc)
+            # I-002: Payment failure is buyer-side (card declined), attribute to buyer
+            booking.cancelled_by = "buyer"
             if booking.availability:
                 booking.availability.is_booked = False
             await db.flush()
@@ -161,6 +181,8 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         if booking and booking.status in (BookingStatus.PENDING_ACCEPTANCE, BookingStatus.CONFIRMED):
             booking.status = BookingStatus.CANCELLED
             booking.cancelled_at = datetime.now(timezone.utc)
+            # B-002: Payment cancellation is buyer-side, attribute to buyer
+            booking.cancelled_by = "buyer"
             if booking.availability:
                 booking.availability.is_booked = False
             await db.flush()
@@ -192,9 +214,10 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             )
             profile = result.scalar_one_or_none()
             if profile:
-                # Check if MechanicProfile has a stripe_onboarded field; if so, update it
-                if hasattr(profile, "stripe_onboarded"):
-                    profile.stripe_onboarded = True
+                # Mark mechanic as active after successful Stripe onboarding
+                # I-002: Only auto-activate if identity has been verified
+                if not profile.is_active and profile.is_identity_verified:
+                    profile.is_active = True
                     await db.flush()
                 logger.info(
                     "stripe_account_fully_onboarded",
@@ -215,31 +238,56 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             )
 
     elif event_type == "charge.dispute.created":
+        # PAY-R03: Create a DisputeCase when Stripe opens a dispute
         dispute_obj = event["data"]["object"]
         dispute_pi = dispute_obj.get("payment_intent")
+        dispute_reason = dispute_obj.get("reason", "unknown")
+        stripe_dispute_id = dispute_obj.get("id")
+
+        logger.warning(
+            "stripe_dispute_created",
+            event_type=event_type,
+            dispute_id=str(stripe_dispute_id),
+            dispute_reason=dispute_reason,
+            dispute_amount=dispute_obj.get("amount"),
+            dispute_currency=dispute_obj.get("currency"),
+        )
+
         if dispute_pi:
             dispute_booking_result = await db.execute(
                 select(Booking).where(Booking.stripe_payment_intent_id == dispute_pi)
             )
             dispute_booking = dispute_booking_result.scalar_one_or_none()
-            logger.warning(
-                "stripe_dispute_created",
-                event_type=event_type,
-                booking_id=str(dispute_booking.id) if dispute_booking else None,
-                dispute_id=str(dispute_obj.get("id")),
-                dispute_reason=dispute_obj.get("reason"),
-                dispute_amount=dispute_obj.get("amount"),
-                dispute_currency=dispute_obj.get("currency"),
-            )
-        else:
-            logger.warning(
-                "stripe_dispute_created",
-                event_type=event_type,
-                dispute_id=str(dispute_obj.get("id")),
-                dispute_reason=dispute_obj.get("reason"),
-                dispute_amount=dispute_obj.get("amount"),
-                dispute_currency=dispute_obj.get("currency"),
-            )
+            if dispute_booking:
+                # Only create if no existing dispute for this booking
+                existing_dispute = await db.execute(
+                    select(DisputeCase).where(DisputeCase.booking_id == dispute_booking.id)
+                )
+                if not existing_dispute.scalar_one_or_none():
+                    # Map Stripe reason to our DisputeReason enum
+                    reason_map = {
+                        "product_not_received": DisputeReason.NO_SHOW,
+                        "product_unacceptable": DisputeReason.WRONG_INFO,
+                    }
+                    mapped_reason = reason_map.get(dispute_reason, DisputeReason.OTHER)
+                    new_dispute = DisputeCase(
+                        booking_id=dispute_booking.id,
+                        opened_by=dispute_booking.buyer_id,
+                        reason=mapped_reason,
+                        description=f"Auto-created from Stripe dispute {stripe_dispute_id}: {dispute_reason}",
+                    )
+                    db.add(new_dispute)
+                    await db.flush()
+                    logger.info(
+                        "dispute_case_auto_created",
+                        booking_id=str(dispute_booking.id),
+                        stripe_dispute_id=stripe_dispute_id,
+                    )
+                else:
+                    logger.info(
+                        "dispute_case_already_exists",
+                        booking_id=str(dispute_booking.id),
+                    )
 
     # Record event as processed for idempotency
     db.add(ProcessedWebhookEvent(event_id=event_id))
@@ -249,14 +297,18 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
 
 @router.patch("/disputes/resolve", response_model=dict)
+@limiter.limit("30/minute")
 async def resolve_dispute(
+    request: Request,
     body: DisputeResolveRequest,
     admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """Admin resolves a dispute. Resolution: 'buyer' (refund) or 'mechanic' (release payment)."""
     result = await db.execute(
-        select(DisputeCase).where(DisputeCase.id == body.dispute_id)
+        select(DisputeCase)
+        .where(DisputeCase.id == body.dispute_id)
+        .with_for_update()
     )
     dispute = result.scalar_one_or_none()
     if not dispute:
@@ -269,36 +321,49 @@ async def resolve_dispute(
         select(Booking)
         .where(Booking.id == dispute.booking_id)
         .options(selectinload(Booking.mechanic))
+        .with_for_update()
     )
     booking = booking_result.scalar_one_or_none()
     if not booking:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
 
-    if body.resolution == "buyer":
-        # Refund to buyer
-        new_status = BookingStatus.CANCELLED
-        validate_transition(booking.status, new_status)
-        if booking.stripe_payment_intent_id:
-            await cancel_payment_intent(booking.stripe_payment_intent_id)
-        dispute.status = DisputeStatus.RESOLVED_BUYER
-        booking.status = new_status
+    try:
+        if body.resolution == "buyer":
+            # Refund to buyer
+            new_status = BookingStatus.CANCELLED
+            validate_transition(booking.status, new_status)
+            if booking.stripe_payment_intent_id:
+                await cancel_payment_intent(booking.stripe_payment_intent_id)
+            dispute.status = DisputeStatus.RESOLVED_BUYER
+            booking.status = new_status
 
-        # Apply no-show penalty if dispute reason was mechanic no-show
-        if dispute.reason == DisputeReason.NO_SHOW and booking.mechanic:
-            await apply_no_show_penalty(db, booking.mechanic)
-    else:
-        # Release payment to mechanic
-        new_status = BookingStatus.COMPLETED
-        validate_transition(booking.status, new_status)
-        if booking.stripe_payment_intent_id:
-            await capture_payment_intent(booking.stripe_payment_intent_id)
-        dispute.status = DisputeStatus.RESOLVED_MECHANIC
-        booking.status = new_status
-        booking.payment_released_at = datetime.now(timezone.utc)
+            # Apply no-show penalty if dispute reason was mechanic no-show
+            if dispute.reason == DisputeReason.NO_SHOW and booking.mechanic:
+                await apply_no_show_penalty(db, booking.mechanic)
+        else:
+            # Release payment to mechanic
+            new_status = BookingStatus.COMPLETED
+            validate_transition(booking.status, new_status)
+            if booking.stripe_payment_intent_id:
+                await capture_payment_intent(booking.stripe_payment_intent_id)
+            dispute.status = DisputeStatus.RESOLVED_MECHANIC
+            booking.status = new_status
+            booking.payment_released_at = datetime.now(timezone.utc)
+    except StripeServiceError as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     dispute.resolved_at = datetime.now(timezone.utc)
     dispute.resolved_by_admin = admin.id
     dispute.resolution_notes = body.resolution_notes
+
+    # ADMIN-R01: Audit log
+    from app.models.audit_log import AuditLog
+    db.add(AuditLog(
+        action=f"resolve_dispute_{body.resolution}",
+        admin_user_id=admin.id,
+        detail=body.resolution_notes,
+        metadata_json={"dispute_id": str(body.dispute_id), "resolution": body.resolution},
+    ))
 
     await db.flush()
     logger.info("dispute_resolved", dispute_id=str(body.dispute_id), resolution=body.resolution)

@@ -1,8 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
-from sqlalchemy.dialects.postgresql import JSON
+from sqlalchemy import CheckConstraint, JSON, Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -11,6 +10,16 @@ from app.models.types import GUID
 
 class Notification(Base):
     __tablename__ = "notifications"
+    __table_args__ = (
+        CheckConstraint(
+            "type IN ("
+            "'booking_created', 'booking_confirmed', 'booking_refused', "
+            "'booking_cancelled', 'check_out_done', 'booking_disputed', "
+            "'new_message', 'reminder', 'no_show', 'profile_verification'"
+            ")",
+            name="ck_notification_type",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(

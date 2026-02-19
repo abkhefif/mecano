@@ -49,6 +49,10 @@
         .photos { display: flex; gap: 15px; margin: 10px 0; }
         .photos img { max-width: 300px; max-height: 200px; border: 1px solid #e5e7eb; border-radius: 4px; }
 
+        .defect-photos { display: flex; flex-wrap: wrap; gap: 10px; margin: 10px 0; }
+        .defect-photos .defect-photo { text-align: center; }
+        .defect-photos img { max-width: 200px; max-height: 150px; border: 1px solid #e5e7eb; border-radius: 4px; }
+
         .signature { margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 15px; }
         .signature .name { font-weight: bold; font-size: 16px; }
 
@@ -114,6 +118,20 @@
                 {% if photo_odometer_url %}
                 <div><img src="{{ photo_odometer_url }}" alt="Compteur"><br><small>Compteur kilometrique</small></div>
                 {% endif %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if additional_photo_urls %}
+        <div class="section">
+            <h2>Photos des defauts</h2>
+            <div class="defect-photos">
+                {% for photo_url in additional_photo_urls %}
+                <div class="defect-photo">
+                    <img src="{{ photo_url }}" alt="Defaut {{ loop.index }}">
+                    <br><small>Photo {{ loop.index }}</small>
+                </div>
+                {% endfor %}
             </div>
         </div>
         {% endif %}

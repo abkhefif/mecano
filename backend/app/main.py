@@ -1,3 +1,4 @@
+import re as _re
 import uuid as _uuid
 from contextlib import asynccontextmanager
 
@@ -45,7 +46,63 @@ logger = structlog.get_logger()
 
 # Sentry error tracking
 if settings.SENTRY_DSN:
-    sentry_sdk.init(dsn=settings.SENTRY_DSN, traces_sample_rate=0.1, environment=settings.APP_ENV)
+    sentry_sdk.init(
+        dsn=settings.SENTRY_DSN,
+        traces_sample_rate=0.1,
+        environment=settings.APP_ENV,
+        send_default_pii=False,
+    )
+
+
+async def _check_alembic_migration_version() -> None:
+    """I-003: Log a WARNING if the database migration version does not match alembic head.
+
+    This is a best-effort check that never crashes the application.
+    """
+    try:
+        from alembic.config import Config as AlembicConfig
+        from alembic.script import ScriptDirectory
+        from sqlalchemy import inspect as sa_inspect
+
+        alembic_cfg = AlembicConfig("alembic.ini")
+        script = ScriptDirectory.from_config(alembic_cfg)
+        head_rev = script.get_current_head()
+
+        async with async_session() as session:
+            conn = await session.connection()
+
+            def _get_current_rev(connection):
+                context = connection.dialect.has_table(connection, "alembic_version")
+                if not context:
+                    return None
+                result = connection.execute(text("SELECT version_num FROM alembic_version"))
+                row = result.fetchone()
+                return row[0] if row else None
+
+            current_rev = await conn.run_sync(_get_current_rev)
+
+        if current_rev is None:
+            logger.warning(
+                "alembic_version_check",
+                status="no_alembic_version_table",
+                message="No alembic_version table found — database may not be initialized",
+            )
+        elif current_rev != head_rev:
+            logger.warning(
+                "alembic_version_mismatch",
+                current=current_rev,
+                head=head_rev,
+                message="Database migration version does not match alembic head. Run 'alembic upgrade head'.",
+            )
+        else:
+            logger.info("alembic_version_ok", version=current_rev)
+    except Exception as exc:
+        # I-003: Never crash the app — just log and continue
+        logger.warning(
+            "alembic_version_check_failed",
+            error=str(exc),
+            message="Could not verify database migration version",
+        )
 
 
 @asynccontextmanager
@@ -53,6 +110,18 @@ async def lifespan(app: FastAPI):
     from app.services.scheduler import scheduler, start_scheduler
 
     logger.info("emecano_startup", env=settings.APP_ENV)
+
+    # I-003: Best-effort migration version check (never crashes)
+    await _check_alembic_migration_version()
+
+    # I-004: Warn if STRIPE_WEBHOOK_SECRET is not configured
+    if not settings.STRIPE_WEBHOOK_SECRET:
+        logger.warning(
+            "stripe_webhook_secret_empty",
+            message="STRIPE_WEBHOOK_SECRET is not set — webhook signature verification is disabled. "
+                    "This is acceptable in development but MUST be configured in production.",
+        )
+
     start_scheduler()
     yield
     scheduler.shutdown(wait=True)
@@ -77,7 +146,7 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 async def global_exception_handler(request: Request, exc: Exception):
     """Catch unhandled exceptions and return a safe 500 response in production."""
     logger.exception("unhandled_exception", path=request.url.path)
-    if settings.is_production:
+    if settings.APP_ENV != "development":
         return JSONResponse(
             status_code=500,
             content={"detail": "Internal server error"},
@@ -101,30 +170,52 @@ if settings.is_production:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
         allow_headers=["Authorization", "Content-Type"],
     )
+    if not settings.cors_origins_list:
+        logger.warning("cors_origins_empty_in_production", app_env=settings.APP_ENV)
 else:
     # WARNING: Wildcard CORS is used ONLY in development/local mode.
     # In production the branch above restricts origins to settings.cors_origins_list.
     # Do NOT deploy with allow_origins=["*"] — it disables browser same-origin protections.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=["http://localhost:3000", "http://localhost:8081", "http://localhost:19006"],
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-if settings.is_production:
+# SEC-011: Enable security headers in both production and staging
+if settings.APP_ENV != "development":
     app.add_middleware(SecurityHeadersMiddleware)
+
+
+_REQUEST_ID_RE = _re.compile(r"^[a-zA-Z0-9\-]{1,64}$")
 
 
 @app.middleware("http")
 async def request_id_middleware(request: Request, call_next):
-    """Attach a unique request ID to every request for tracing."""
-    request_id = request.headers.get("X-Request-ID") or str(_uuid.uuid4())
+    """Attach a unique request ID and measure duration for every request."""
+    import time as _time
+
+    # SEC-011: Validate X-Request-ID to prevent log injection
+    client_id = request.headers.get("X-Request-ID")
+    request_id = client_id if client_id and _REQUEST_ID_RE.match(client_id) else str(_uuid.uuid4())
     structlog.contextvars.bind_contextvars(request_id=request_id)
+    start = _time.monotonic()
     try:
         response = await call_next(request)
+        duration_ms = (_time.monotonic() - start) * 1000
         response.headers["X-Request-ID"] = request_id
+        response.headers["X-Process-Time"] = f"{duration_ms:.1f}ms"
+        # OBS-04: Log slow requests (>1s) as warnings
+        if duration_ms > 1000:
+            logger.warning(
+                "slow_request",
+                method=request.method,
+                path=request.url.path,
+                duration_ms=round(duration_ms, 1),
+                status_code=response.status_code,
+            )
         return response
     finally:
         structlog.contextvars.clear_contextvars()
@@ -143,15 +234,46 @@ app.include_router(admin_router)
 
 
 @app.get("/health")
-async def health_check():
-    """Health check with database connectivity verification."""
+@limiter.limit("60/minute")
+async def health_check(request: Request):
+    """Health check with database and Redis connectivity verification."""
+    result: dict = {"status": "ok", "database": "connected", "redis": "connected"}
+
+    # Database check
     try:
         async with async_session() as db:
             await db.execute(text("SELECT 1"))
-        return {"status": "ok", "database": "connected"}
     except Exception:
-        from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=503,
-            content={"status": "unhealthy", "database": "disconnected"},
+            content={"status": "unhealthy", "database": "disconnected", "redis": "unknown"},
         )
+
+    # Redis check (non-blocking: backend works without Redis via fallbacks)
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+        await r.ping()
+        await r.aclose()
+    except Exception:
+        result["redis"] = "unavailable"
+
+    # AUDIT-FIX3: Verify scheduler is running
+    try:
+        from app.services.scheduler import scheduler
+        result["scheduler"] = "running" if scheduler.running else "stopped"
+    except Exception:
+        result["scheduler"] = "unknown"
+
+    if settings.is_production:
+        db_ok = result.get("database") == "connected"
+        redis_ok = result.get("redis") == "connected"
+        sched_ok = result.get("scheduler") == "running"
+        overall = "ok" if (db_ok and redis_ok and sched_ok) else "unhealthy"
+        return {
+            "status": overall,
+            "database": "ok" if db_ok else "error",
+            "redis": "ok" if redis_ok else "error",
+            "scheduler": "ok" if sched_ok else "error",
+        }
+    return result

@@ -6,16 +6,28 @@ In dev mode (no RESEND_API_KEY), logs a warning and skips sending.
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from html import escape  # noqa: F401 — M-02: available for escaping user values in email templates
 
 import httpx
 import structlog
-from jose import jwt
+import jwt
 
 from app.config import settings
 
 logger = structlog.get_logger()
 
 RESEND_API_URL = "https://api.resend.com/emails"
+
+_email_client: httpx.AsyncClient | None = None
+
+
+def _get_email_client() -> httpx.AsyncClient:
+    global _email_client
+    if _email_client is None or _email_client.is_closed:
+        _email_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0),
+        )
+    return _email_client
 
 
 def create_email_verification_token(email: str) -> str:
@@ -34,6 +46,15 @@ def create_email_verification_token(email: str) -> str:
 
 def decode_email_verification_token(token: str) -> str | None:
     """Decode an email verification token and return the email, or None if invalid."""
+    payload = decode_email_verification_token_full(token)
+    return payload.get("sub") if payload else None
+
+
+def decode_email_verification_token_full(token: str) -> dict | None:
+    """Decode an email verification token and return the full payload, or None if invalid.
+
+    SEC-R01: Single decode — callers should use this instead of decoding twice.
+    """
     try:
         payload = jwt.decode(
             token,
@@ -44,7 +65,7 @@ def decode_email_verification_token(token: str) -> str | None:
         )
         if payload.get("type") != "email_verify":
             return None
-        return payload.get("sub")
+        return payload
     except Exception:
         return None
 
@@ -80,26 +101,25 @@ async def send_password_reset_email(to_email: str, reset_token: str) -> bool:
     }
 
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                RESEND_API_URL,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                timeout=10.0,
+        client = _get_email_client()
+        response = await client.post(
+            RESEND_API_URL,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+        )
+        if response.is_success:
+            logger.info("password_reset_email_sent", email=to_email)
+            return True
+        else:
+            logger.error(
+                "password_reset_email_failed",
+                email=to_email,
+                status_code=response.status_code,
             )
-            if response.status_code == 200:
-                logger.info("password_reset_email_sent", email=to_email)
-                return True
-            else:
-                logger.error(
-                    "password_reset_email_failed",
-                    email=to_email,
-                    status_code=response.status_code,
-                )
-                return False
+            return False
     except Exception as exc:
         logger.error("password_reset_email_error", email=to_email, error=str(exc))
         return False
@@ -135,26 +155,25 @@ async def send_verification_email(email: str, token: str) -> bool:
     }
 
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                RESEND_API_URL,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                timeout=10.0,
+        client = _get_email_client()
+        response = await client.post(
+            RESEND_API_URL,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                "Content-Type": "application/json",
+            },
+        )
+        if response.is_success:
+            logger.info("verification_email_sent", email=email)
+            return True
+        else:
+            logger.error(
+                "verification_email_failed",
+                email=email,
+                status_code=response.status_code,
             )
-            if response.status_code == 200:
-                logger.info("verification_email_sent", email=email)
-                return True
-            else:
-                logger.error(
-                    "verification_email_failed",
-                    email=email,
-                    status_code=response.status_code,
-                )
-                return False
+            return False
     except Exception as exc:
         logger.error("verification_email_error", email=email, error=str(exc))
         return False

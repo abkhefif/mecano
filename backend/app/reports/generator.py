@@ -16,6 +16,15 @@ logger = structlog.get_logger()
 
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
+# AUD-B06: Warn at import time if the templates directory is missing
+if not TEMPLATE_DIR.exists():
+    import warnings
+    warnings.warn(f"Templates directory not found: {TEMPLATE_DIR}")
+
+# AUD-M03: Create Jinja2 environment once at module level instead of per-call.
+# SEC-020: autoescape=True prevents template injection (XSS) in generated HTML
+_jinja_env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)), autoescape=True)
+
 STATUS_LABELS = {
     # Component
     "ok": "OK",
@@ -83,22 +92,24 @@ def _status_class(value) -> str:
     return STATUS_CLASSES.get(v, "")
 
 
+# AUD-004: Register Jinja2 template globals once at module level instead of
+# mutating them on every generate_pdf call.
+_jinja_env.globals["status_label"] = _status_label
+_jinja_env.globals["status_class"] = _status_class
+
+
 async def generate_pdf(
     booking: Booking,
     proof: ValidationProof,
     checklist: InspectionChecklist,
     mechanic_name: str,
+    additional_photo_urls: list[str] | None = None,
 ) -> str:
     """Generate an inspection report PDF and upload it to storage.
 
     Returns the URL of the uploaded PDF.
     """
-    # SEC-020: autoescape=True prevents template injection (XSS) in generated HTML
-    env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)), autoescape=True)
-    env.globals["status_label"] = _status_label
-    env.globals["status_class"] = _status_class
-
-    template = env.get_template("inspection_report.html")
+    template = _jinja_env.get_template("inspection_report.html")
 
     rec_label, rec_class = RECOMMENDATION_MAP.get(
         checklist.recommendation.value, ("Inconnu", "")
@@ -115,6 +126,7 @@ async def generate_pdf(
         meeting_address=booking.meeting_address,
         photo_plate_url=proof.photo_plate_url,
         photo_odometer_url=proof.photo_odometer_url,
+        additional_photo_urls=additional_photo_urls or [],
         checklist=checklist,
         rec_label=rec_label,
         rec_class=rec_class,
@@ -123,7 +135,11 @@ async def generate_pdf(
         report_id=report_id,
     )
 
-    pdf_bytes = await asyncio.to_thread(HTML(string=html_content).write_pdf)
+    # AUD-B10: Timeout on PDF generation to prevent indefinite hangs
+    pdf_bytes = await asyncio.wait_for(
+        asyncio.to_thread(HTML(string=html_content).write_pdf),
+        timeout=30,
+    )
 
     key = f"reports/{uuid.uuid4()}.pdf"
     url = await upload_file_bytes(pdf_bytes, key, "application/pdf")
@@ -137,14 +153,15 @@ async def generate_payment_receipt(booking_data: dict) -> bytes:
 
     Returns the raw PDF bytes (not uploaded to storage).
     """
-    # SEC-020: autoescape=True prevents template injection (XSS) in generated HTML
-    env = Environment(loader=FileSystemLoader(str(TEMPLATE_DIR)), autoescape=True)
-
-    template = env.get_template("payment_receipt.html")
+    template = _jinja_env.get_template("payment_receipt.html")
 
     html_content = template.render(**booking_data)
 
-    pdf_bytes = await asyncio.to_thread(HTML(string=html_content).write_pdf)
+    # AUD-B10: Timeout on PDF generation to prevent indefinite hangs
+    pdf_bytes = await asyncio.wait_for(
+        asyncio.to_thread(HTML(string=html_content).write_pdf),
+        timeout=30,
+    )
 
     logger.info("payment_receipt_generated", receipt_number=booking_data.get("receipt_number"))
     return pdf_bytes

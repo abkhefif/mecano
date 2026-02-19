@@ -3,7 +3,7 @@ from datetime import date, datetime, time, timezone
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from app.models.enums import VehicleType
+from app.models.enums import ServiceLocation, VehicleType
 
 
 class DiplomaResponse(BaseModel):
@@ -24,6 +24,8 @@ class MechanicUpdateRequest(BaseModel):
     free_zone_km: int | None = Field(None, ge=0, le=50)
     accepted_vehicle_types: list[VehicleType] | None = None
     has_obd_diagnostic: bool | None = None
+    service_location: ServiceLocation | None = None
+    garage_address: str | None = Field(None, max_length=255)
 
     @model_validator(mode="after")
     def free_zone_within_radius(self) -> "MechanicUpdateRequest":
@@ -37,8 +39,8 @@ class MechanicListItem(BaseModel):
     id: uuid.UUID
     user_id: uuid.UUID
     city: str
-    city_lat: float
-    city_lng: float
+    city_lat: float | None = None
+    city_lng: float | None = None
     distance_km: float | None = None
     max_radius_km: int
     accepted_vehicle_types: list[str]
@@ -49,15 +51,16 @@ class MechanicListItem(BaseModel):
     is_identity_verified: bool
     photo_url: str | None = None
     next_available_date: str | None = None
+    service_location: str = "mobile"
+    garage_address: str | None = None
 
     model_config = {"from_attributes": True}
 
 
 class MechanicDetailResponse(MechanicListItem):
     free_zone_km: int
-    city_lat: float
-    city_lng: float
-    cv_url: str | None = None
+    city_lat: float | None = None
+    city_lng: float | None = None
 
 
 class ReviewSummary(BaseModel):
@@ -100,3 +103,9 @@ class AvailabilityCreateRequest(BaseModel):
         if v < datetime.now(timezone.utc).date():
             raise ValueError("Date must be today or in the future")
         return v
+
+    @model_validator(mode="after")
+    def end_after_start(self) -> "AvailabilityCreateRequest":
+        if self.end_time <= self.start_time:
+            raise ValueError("end_time must be after start_time")
+        return self

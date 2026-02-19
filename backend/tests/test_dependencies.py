@@ -37,13 +37,17 @@ async def test_get_current_user_no_sub_in_token(
     client: AsyncClient,
     db: AsyncSession,
 ):
-    """Test that a JWT without 'sub' claim returns 401."""
-    from jose import jwt
+    """Test that a JWT with type=access but no 'sub' claim returns 401."""
+    import jwt
     from app.config import settings
 
-    # Create a token without 'sub'
-    token = jwt.encode({"foo": "bar", "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
-                       settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+    # Create a token with type=access but without 'sub'
+    token = jwt.encode({
+        "type": "access",
+        "jti": str(uuid.uuid4()),
+        "iss": "emecano",
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+    }, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
     response = await client.get("/auth/me", headers=auth_header(token))
     assert response.status_code == 401
     assert "Invalid authentication token" in response.json()["detail"]
@@ -193,6 +197,94 @@ async def test_get_current_mechanic_suspension_expired(
     )
     assert response.status_code == 200
     assert response.json()["city"] == "nantes"
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_refresh_token_rejected(
+    client: AsyncClient,
+    buyer_user: User,
+):
+    """Refresh token cannot be used to access protected endpoints (type != access)."""
+    import jwt as pyjwt
+    from app.config import settings
+
+    payload = {
+        "sub": str(buyer_user.id),
+        "type": "refresh",
+        "iss": "emecano",
+        "jti": str(uuid.uuid4()),
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+    }
+    token = pyjwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+    response = await client.get("/auth/me", headers=auth_header(token))
+    assert response.status_code == 401
+    assert "Invalid authentication token" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_no_jti_rejected(
+    client: AsyncClient,
+    buyer_user: User,
+):
+    """Token without jti claim is rejected."""
+    import jwt as pyjwt
+    from app.config import settings
+
+    payload = {
+        "sub": str(buyer_user.id),
+        "type": "access",
+        "iss": "emecano",
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+    }
+    token = pyjwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
+    response = await client.get("/auth/me", headers=auth_header(token))
+    assert response.status_code == 401
+    assert "Invalid token" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_blacklisted_token(
+    client: AsyncClient,
+    db: AsyncSession,
+    buyer_user: User,
+):
+    """Blacklisted token is rejected."""
+    from app.models.blacklisted_token import BlacklistedToken
+
+    token = create_access_token(str(buyer_user.id))
+    # Decode to get jti
+    import jwt as pyjwt
+    from app.config import settings
+    payload = pyjwt.decode(token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM],
+                           options={"verify_iss": False})
+    jti = payload["jti"]
+
+    # Blacklist the token
+    db.add(BlacklistedToken(jti=jti, expires_at=datetime.now(timezone.utc) + timedelta(hours=1)))
+    await db.flush()
+
+    response = await client.get("/auth/me", headers=auth_header(token))
+    assert response.status_code == 401
+    assert "revoked" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_password_changed_invalidates_token(
+    client: AsyncClient,
+    db: AsyncSession,
+    buyer_user: User,
+):
+    """Token issued before password change is rejected."""
+    # Issue token first
+    token = create_access_token(str(buyer_user.id))
+
+    # Set password_changed_at to future (simulating password was just changed)
+    buyer_user.password_changed_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    await db.flush()
+
+    response = await client.get("/auth/me", headers=auth_header(token))
+    assert response.status_code == 401
+    assert "password change" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

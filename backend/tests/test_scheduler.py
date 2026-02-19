@@ -13,7 +13,7 @@ from app.models.enums import BookingStatus, VehicleType
 from app.models.mechanic_profile import MechanicProfile
 from app.models.user import User
 from app.models.webhook_event import ProcessedWebhookEvent
-from tests.conftest import engine, test_session
+from tests.conftest import engine, TestSessionFactory
 from app.database import Base
 
 
@@ -173,7 +173,8 @@ async def test_release_overdue_payments():
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
     with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
-         patch("app.services.scheduler.capture_payment_intent", new_callable=AsyncMock) as mock_capture:
+         patch("app.services.scheduler.capture_payment_intent", new_callable=AsyncMock) as mock_capture, \
+         patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         await release_overdue_payments()
         mock_capture.assert_called_once_with("pi_mock_overdue")
         assert mock_booking.status == BookingStatus.COMPLETED
@@ -204,7 +205,8 @@ async def test_release_overdue_payments_stripe_failure():
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
     with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
-         patch("app.services.scheduler.capture_payment_intent", new_callable=AsyncMock, side_effect=Exception("fail")):
+         patch("app.services.scheduler.capture_payment_intent", new_callable=AsyncMock, side_effect=Exception("fail")), \
+         patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         # Should not raise
         await release_overdue_payments()
         mock_db.rollback.assert_called()
@@ -239,7 +241,8 @@ async def test_check_pending_acceptances():
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
     with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
-         patch("app.services.scheduler.cancel_payment_intent", new_callable=AsyncMock) as mock_cancel:
+         patch("app.services.scheduler.cancel_payment_intent", new_callable=AsyncMock) as mock_cancel, \
+         patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         await check_pending_acceptances()
         mock_cancel.assert_called_once_with("pi_mock_pending")
         assert mock_booking.status == BookingStatus.CANCELLED
@@ -272,7 +275,8 @@ async def test_check_pending_acceptances_stripe_failure():
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
     with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
-         patch("app.services.scheduler.cancel_payment_intent", new_callable=AsyncMock, side_effect=Exception("fail")):
+         patch("app.services.scheduler.cancel_payment_intent", new_callable=AsyncMock, side_effect=Exception("fail")), \
+         patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         await check_pending_acceptances()
         # Status should NOT be changed since Stripe cancel failed
         assert mock_booking.status == BookingStatus.PENDING_ACCEPTANCE
@@ -343,7 +347,8 @@ async def test_send_reminders_24h():
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
     with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
-         patch("app.services.scheduler.send_booking_reminder", new_callable=AsyncMock) as mock_reminder:
+         patch("app.services.scheduler.send_booking_reminder", new_callable=AsyncMock) as mock_reminder, \
+         patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         await send_reminders()
         mock_reminder.assert_called_once()
         call_kwargs = mock_reminder.call_args.kwargs
@@ -423,7 +428,8 @@ async def test_send_reminders_2h():
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
     with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
-         patch("app.services.scheduler.send_booking_reminder", new_callable=AsyncMock) as mock_reminder:
+         patch("app.services.scheduler.send_booking_reminder", new_callable=AsyncMock) as mock_reminder, \
+         patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         await send_reminders()
         mock_reminder.assert_called_once()
         call_kwargs = mock_reminder.call_args.kwargs
@@ -459,7 +465,8 @@ async def test_cleanup_old_webhook_events():
     mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("app.services.scheduler.async_session", return_value=mock_session_ctx):
+    with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
+         patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         await cleanup_old_webhook_events()
         mock_db.execute.assert_called_once()
         mock_db.commit.assert_called_once()
@@ -481,7 +488,8 @@ async def test_cleanup_old_webhook_events_none_deleted():
     mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("app.services.scheduler.async_session", return_value=mock_session_ctx):
+    with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
+         patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         await cleanup_old_webhook_events()
 
 
@@ -492,10 +500,11 @@ async def test_start_scheduler():
 
     with patch("app.services.scheduler.scheduler") as mock_scheduler:
         start_scheduler()
-        # Should have 9 add_job calls (pending, reminders, overdue, cleanup,
+        # Should have 10 add_job calls (pending, reminders, overdue, cleanup,
         # notify_unverified, cleanup_blacklisted_tokens, reset_no_show_weekly,
-        # cleanup_old_notifications, cleanup_expired_push_tokens)
-        assert mock_scheduler.add_job.call_count == 9
+        # cleanup_old_notifications, cleanup_expired_push_tokens,
+        # detect_orphaned_files)
+        assert mock_scheduler.add_job.call_count == 10
         mock_scheduler.start.assert_called_once()
 
 
@@ -534,7 +543,8 @@ async def test_send_reminders_no_availability():
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
     with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
-         patch("app.services.scheduler.send_booking_reminder", new_callable=AsyncMock) as mock_reminder:
+         patch("app.services.scheduler.send_booking_reminder", new_callable=AsyncMock) as mock_reminder, \
+         patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         await send_reminders()
         mock_reminder.assert_not_called()
 
@@ -601,7 +611,8 @@ async def test_send_reminders_exception_handled():
     mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
 
     with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
-         patch("app.services.scheduler.send_booking_reminder", new_callable=AsyncMock, side_effect=Exception("boom")):
+         patch("app.services.scheduler.send_booking_reminder", new_callable=AsyncMock, side_effect=Exception("boom")), \
+         patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         # Should not raise
         await send_reminders()
         # reminder_24h_sent should NOT be True since sending failed

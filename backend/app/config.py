@@ -12,6 +12,8 @@ _DEFAULT_DATABASE_URL = "postgresql+asyncpg://emecano:emecano_password@localhost
 class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = _DEFAULT_DATABASE_URL
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -58,6 +60,14 @@ class Settings(BaseSettings):
 
     # App
     APP_ENV: str = "development"
+
+    @field_validator("APP_ENV")
+    @classmethod
+    def validate_app_env(cls, v: str) -> str:
+        allowed = {"development", "staging", "production"}
+        if v not in allowed:
+            raise ValueError(f"APP_ENV must be one of {allowed}, got '{v}'")
+        return v
     APP_DEBUG: bool = False
     CORS_ORIGINS: str = ""
 
@@ -102,9 +112,28 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "STRIPE_SECRET_KEY must be set in production."
                 )
+            # CRIT-04: Validate Stripe key prefix matches environment
+            if self.APP_ENV == "production" and not self.STRIPE_SECRET_KEY.startswith("sk_live_"):
+                raise ValueError(
+                    "Production must use a live Stripe key (sk_live_*)"
+                )
+            if self.APP_ENV == "staging" and not self.STRIPE_SECRET_KEY.startswith("sk_test_"):
+                raise ValueError(
+                    "Staging must use a test Stripe key (sk_test_*)"
+                )
             if not self.STRIPE_WEBHOOK_SECRET:
                 raise ValueError(
                     "STRIPE_WEBHOOK_SECRET must be set in production."
+                )
+            # AUD-C04: Ensure webhook secret has sufficient length
+            if len(self.STRIPE_WEBHOOK_SECRET) < 20:
+                raise ValueError(
+                    "STRIPE_WEBHOOK_SECRET must be at least 20 characters long in production."
+                )
+            # MED-10: Require Sentry DSN in production for crash reporting
+            if not self.SENTRY_DSN:
+                raise ValueError(
+                    "SENTRY_DSN must be set in production for error monitoring."
                 )
         else:
             if self.DATABASE_URL == _DEFAULT_DATABASE_URL:
@@ -123,6 +152,17 @@ class Settings(BaseSettings):
                     "STRIPE_WEBHOOK_SECRET is empty — webhook verification will be insecure.",
                     stacklevel=2,
                 )
+            # SEC-005: Warn about missing email / storage config
+            if not self.RESEND_API_KEY:
+                warnings.warn(
+                    "RESEND_API_KEY is empty — email sending will be disabled.",
+                    stacklevel=2,
+                )
+            if not self.R2_ENDPOINT_URL:
+                warnings.warn(
+                    "R2_ENDPOINT_URL is empty — file uploads will use local storage fallback.",
+                    stacklevel=2,
+                )
         return self
 
     @property
@@ -133,7 +173,7 @@ class Settings(BaseSettings):
 
     @property
     def is_production(self) -> bool:
-        return self.APP_ENV == "production"
+        return self.APP_ENV in ("production", "staging")
 
     model_config = {"env_file": ".env", "extra": "ignore"}
 

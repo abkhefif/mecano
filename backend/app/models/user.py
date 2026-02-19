@@ -25,6 +25,8 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
     expo_push_token: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # SEC-005: Track password change time to invalidate all pre-existing tokens
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     mechanic_profile: Mapped["MechanicProfile | None"] = relationship(
         "MechanicProfile", back_populates="user", uselist=False, lazy="raise"

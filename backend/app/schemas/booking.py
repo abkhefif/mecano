@@ -25,8 +25,8 @@ class BookingCreateRequest(BaseModel):
     mechanic_id: uuid.UUID
     availability_id: uuid.UUID
     vehicle_type: VehicleType
-    vehicle_brand: str = Field(max_length=100)
-    vehicle_model: str = Field(max_length=100)
+    vehicle_brand: str = Field(min_length=1, max_length=100)
+    vehicle_model: str = Field(min_length=1, max_length=100)
     vehicle_year: int = Field(ge=1950)
 
     @field_validator("vehicle_year")
@@ -38,7 +38,7 @@ class BookingCreateRequest(BaseModel):
         return v
     vehicle_plate: str | None = Field(None, max_length=20)
     obd_requested: bool = False
-    meeting_address: str = Field(max_length=500)
+    meeting_address: str = Field(min_length=1, max_length=500)
     meeting_lat: float = Field(ge=-90, le=90)
     meeting_lng: float = Field(ge=-180, le=180)
     slot_start_time: str | None = Field(None, pattern=r"^\d{2}:\d{2}$", description="Chosen sub-slot start time HH:MM within the availability window")
@@ -140,7 +140,9 @@ class BookingMechanicResponse(BaseModel):
 
 
 class BookingCreateResponse(BaseModel):
-    booking: BookingResponse
+    # F-009: Use BookingBuyerResponse to hide commission_amount/mechanic_payout
+    # from the buyer who creates the booking.
+    booking: BookingBuyerResponse
     client_secret: str | None = None
 
 
@@ -177,14 +179,6 @@ class ChecklistInput(BaseModel):
     test_drive_behavior: DriveBehavior | None = None
     remarks: str | None = Field(None, max_length=500)
     recommendation: Recommendation
-
-
-class CheckOutRequest(BaseModel):
-    entered_plate: str | None = Field(None, max_length=20)
-    entered_odometer_km: int = Field(ge=0)
-    gps_lat: float | None = Field(None, ge=-90, le=90)
-    gps_lng: float | None = Field(None, ge=-180, le=180)
-    checklist: ChecklistInput
 
 
 class CheckOutResponse(BaseModel):

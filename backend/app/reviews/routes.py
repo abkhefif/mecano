@@ -2,7 +2,7 @@ import uuid
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -22,7 +22,9 @@ router = APIRouter()
 
 
 @router.post("", response_model=ReviewResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("10/minute")
 async def create_review(
+    request: Request,
     body: ReviewCreateRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -87,25 +89,27 @@ async def create_review(
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already reviewed this booking")
 
-    # Update mechanic rating if public review
+    # BUG-002: Update mechanic rating atomically using a single UPDATE with
+    # subquery to avoid race conditions when concurrent reviews are created.
     if is_public:
-        avg_result = await db.execute(
-            select(func.avg(Review.rating), func.count(Review.id)).where(
-                Review.reviewee_id == reviewee_id,
-                Review.is_public == True,
-            )
+        avg_subq = (
+            select(func.round(func.avg(Review.rating), 2))
+            .where(Review.reviewee_id == reviewee_id, Review.is_public == True)
+            .correlate_except(Review)
+            .scalar_subquery()
         )
-        row = avg_result.one()
-        avg_rating, count = row[0], row[1]
-
-        profile_result = await db.execute(
-            select(MechanicProfile).where(MechanicProfile.user_id == reviewee_id)
+        count_subq = (
+            select(func.count(Review.id))
+            .where(Review.reviewee_id == reviewee_id, Review.is_public == True)
+            .correlate_except(Review)
+            .scalar_subquery()
         )
-        mech_profile = profile_result.scalar_one_or_none()
-        if mech_profile and avg_rating is not None:
-            mech_profile.rating_avg = round(float(avg_rating), 2)
-            mech_profile.total_reviews = count
-            await db.flush()
+        await db.execute(
+            update(MechanicProfile)
+            .where(MechanicProfile.user_id == reviewee_id)
+            .values(rating_avg=avg_subq, total_reviews=count_subq)
+        )
+        await db.flush()
 
     logger.info("review_created", review_id=str(review.id), booking_id=str(booking.id))
     return ReviewResponse.model_validate(review)
@@ -117,7 +121,7 @@ async def list_reviews(
     request: Request,
     mechanic_id: uuid.UUID = Query(...),
     limit: int = Query(20, ge=1, le=100),
-    offset: int = Query(0, ge=0),
+    offset: int = Query(0, ge=0, le=10000),
     db: AsyncSession = Depends(get_db),
 ):
     """List public reviews for a mechanic.

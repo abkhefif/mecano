@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import uuid
 
 import boto3
@@ -32,16 +33,31 @@ def _validate_magic_bytes(content: bytes, content_type: str) -> bool:
     return False
 
 
+# AUD-M02: Cache the S3 client at module level to avoid recreating on each upload
+# AUD-009: Use a lock for thread-safe client creation (double-check pattern)
+_s3_client = None
+_s3_lock = threading.Lock()
+
+
 def get_s3_client():
-    """Create an S3-compatible client for R2/S3."""
-    kwargs = {
-        "service_name": "s3",
-        "aws_access_key_id": settings.R2_ACCESS_KEY_ID,
-        "aws_secret_access_key": settings.R2_SECRET_ACCESS_KEY,
-    }
-    if settings.R2_ENDPOINT_URL:
-        kwargs["endpoint_url"] = settings.R2_ENDPOINT_URL
-    return boto3.client(**kwargs)
+    """Get or create a cached S3-compatible client for R2/S3.
+
+    Thread-safe via double-checked locking. The boto3 low-level client is
+    safe for concurrent use once created; only creation needs synchronization.
+    """
+    global _s3_client
+    if _s3_client is None:
+        with _s3_lock:
+            if _s3_client is None:  # double-check
+                kwargs = {
+                    "service_name": "s3",
+                    "aws_access_key_id": settings.R2_ACCESS_KEY_ID,
+                    "aws_secret_access_key": settings.R2_SECRET_ACCESS_KEY,
+                }
+                if settings.R2_ENDPOINT_URL:
+                    kwargs["endpoint_url"] = settings.R2_ENDPOINT_URL
+                _s3_client = boto3.client(**kwargs)
+    return _s3_client
 
 
 async def upload_file(file: UploadFile, folder: str) -> str:
@@ -118,6 +134,64 @@ async def upload_file(file: UploadFile, folder: str) -> str:
     url = f"{settings.R2_PUBLIC_URL}/{key}"
     logger.info("file_uploaded", key=key, url=url)
     return url
+
+
+# MED-01: Sensitive folders whose files should use pre-signed URLs
+SENSITIVE_FOLDERS = {"identity", "proofs", "cv"}
+
+
+async def generate_presigned_url(key: str, expires_in: int = 900) -> str:
+    """Generate a time-limited pre-signed URL for an R2/S3 object.
+
+    Use this for files in sensitive folders (identity, cv, proofs) to avoid
+    exposing permanent public URLs for PII documents.
+
+    Args:
+        key: The object key (e.g., "identity/uuid.jpg").
+        expires_in: URL validity in seconds (default 15 minutes).
+
+    Returns:
+        Pre-signed URL string, or a mock URL in development.
+    """
+    if not settings.R2_ENDPOINT_URL:
+        return f"https://storage.emecano.dev/{key}?presigned=mock&expires={expires_in}"
+
+    client = get_s3_client()
+    url = await asyncio.to_thread(
+        client.generate_presigned_url,
+        "get_object",
+        Params={"Bucket": settings.R2_BUCKET_NAME, "Key": key},
+        ExpiresIn=expires_in,
+    )
+    logger.info("presigned_url_generated", key=key, expires_in=expires_in)
+    return url
+
+
+def get_key_from_url(url: str) -> str | None:
+    """Extract the object key from a public R2 URL."""
+    if not url or not settings.R2_PUBLIC_URL:
+        return None
+    prefix = f"{settings.R2_PUBLIC_URL}/"
+    if url.startswith(prefix):
+        return url[len(prefix):]
+    # Mock URL in dev mode
+    mock_prefix = "https://storage.emecano.dev/"
+    if url.startswith(mock_prefix):
+        return url[len(mock_prefix):]
+    return None
+
+
+async def get_sensitive_url(url: str | None, expires_in: int = 900) -> str | None:
+    """Convert a public URL to a pre-signed URL if it points to a sensitive file.
+
+    Returns the pre-signed URL, or None if the input URL is None/empty.
+    """
+    if not url:
+        return None
+    key = get_key_from_url(url)
+    if not key:
+        return url  # Can't extract key, return as-is
+    return await generate_presigned_url(key, expires_in)
 
 
 MAX_FILE_BYTES_SIZE = 10 * 1024 * 1024  # 10 MB

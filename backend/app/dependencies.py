@@ -1,10 +1,10 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 import structlog
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+import jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,17 +47,26 @@ async def get_current_user(
             )
 
         # C-03: Check if the token's jti has been blacklisted (logout)
+        # TODO F-018: Cache blacklist lookups in Redis (SISMEMBER) to avoid a DB
+        # query on every authenticated request.  Acceptable for MVP since access
+        # tokens have a short 15-min expiry and the blacklist table stays small.
         jti = payload.get("jti")
-        if jti:
-            blacklisted = await db.execute(
-                select(BlacklistedToken).where(BlacklistedToken.jti == jti)
+        # I-003: Reject tokens that lack a jti claim to prevent blacklist bypass
+        if not jti:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token",
             )
-            if blacklisted.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Token has been revoked",
-                )
-    except JWTError:
+        blacklisted = await db.execute(
+            select(BlacklistedToken).where(BlacklistedToken.jti == jti)
+        )
+        if blacklisted.scalar_one_or_none():
+            logger.warning("blacklisted_token_used", jti=jti, user_id=str(user_id))
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token has been revoked",
+            )
+    except jwt.PyJWTError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token",
@@ -70,18 +79,20 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
-    return user
 
+    # SEC-005: Reject tokens issued before the last password change.
+    # This invalidates ALL sessions across all devices when a password is changed.
+    if user.password_changed_at:
+        token_iat = payload.get("iat")
+        if token_iat:
+            # Add 2-second tolerance for clock skew between token issuance and DB write
+            issued_at = datetime.fromtimestamp(token_iat, tz=timezone.utc)
+            if issued_at < user.password_changed_at - timedelta(seconds=2):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token invalidated by password change",
+                )
 
-async def get_verified_user(
-    user: User = Depends(get_current_user),
-) -> User:
-    """Get current user and verify their email is verified."""
-    if not user.is_verified:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Email verification required. Please verify your email before proceeding.",
-        )
     return user
 
 
@@ -113,9 +124,10 @@ async def get_current_mechanic(
         )
 
     if profile.suspended_until and profile.suspended_until > datetime.now(timezone.utc):
+        # SEC-008: Generic message — do not leak exact suspension timestamp
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Account suspended until {profile.suspended_until.isoformat()}",
+            detail="Account suspended. Contact support for more information.",
         )
 
     return user, profile

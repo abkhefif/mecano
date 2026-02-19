@@ -521,17 +521,15 @@ async def test_suspend_buyer(
     admin_user: User,
     buyer_user: User,
 ):
-    """Suspending a buyer should return status 'suspended'."""
+    """F-020: Suspending a buyer should return 400 because buyers have no suspension mechanism."""
     token = admin_token(admin_user)
     response = await client.patch(
         f"/admin/users/{buyer_user.id}/suspend",
         json={"suspended": True, "reason": "Violation of terms"},
         headers=auth_header(token),
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "suspended"
-    assert data["user_id"] == str(buyer_user.id)
+    assert response.status_code == 400
+    assert "Buyer accounts cannot be suspended" in response.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -541,16 +539,15 @@ async def test_unsuspend_buyer(
     admin_user: User,
     buyer_user: User,
 ):
-    """Unsuspending a buyer should return status 'active'."""
+    """F-020: Unsuspending a buyer should also return 400 (no suspension mechanism for buyers)."""
     token = admin_token(admin_user)
     response = await client.patch(
         f"/admin/users/{buyer_user.id}/suspend",
         json={"suspended": False},
         headers=auth_header(token),
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "active"
+    assert response.status_code == 400
+    assert "Buyer accounts cannot be suspended" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

@@ -174,6 +174,7 @@ async def test_accept_booking(
         commission_rate=Decimal("0.20"),
         commission_amount=Decimal("10.00"),
         mechanic_payout=Decimal("40.00"),
+        stripe_payment_intent_id="pi_mock_5000",
     )
     db.add(booking)
     await db.flush()
@@ -1258,12 +1259,12 @@ async def test_check_out_success(
 
         response = await client.patch(
             f"/bookings/{booking.id}/check-out",
-            params={
+            data={
                 "entered_plate": "AB-123-CD",
-                "entered_odometer_km": 85000,
+                "entered_odometer_km": "85000",
                 "checklist_json": checklist_json,
-                "gps_lat": 43.61,
-                "gps_lng": 1.45,
+                "gps_lat": "43.61",
+                "gps_lng": "1.45",
             },
             files={
                 "photo_plate": ("plate.jpg", b"fake-jpeg-data", "image/jpeg"),
@@ -1340,9 +1341,9 @@ async def test_check_out_not_your_booking(
     token = mechanic_token(mechanic_user)
     response = await client.patch(
         f"/bookings/{booking.id}/check-out",
-        params={
+        data={
             "entered_plate": "AB-123-CD",
-            "entered_odometer_km": 85000,
+            "entered_odometer_km": "85000",
             "checklist_json": "{}",
         },
         files={
@@ -1389,9 +1390,9 @@ async def test_check_out_wrong_status(
     token = mechanic_token(mechanic_user)
     response = await client.patch(
         f"/bookings/{booking.id}/check-out",
-        params={
+        data={
             "entered_plate": "AB-123-CD",
-            "entered_odometer_km": 85000,
+            "entered_odometer_km": "85000",
             "checklist_json": "{}",
         },
         files={
@@ -1438,9 +1439,9 @@ async def test_check_out_invalid_checklist_json(
     token = mechanic_token(mechanic_user)
     response = await client.patch(
         f"/bookings/{booking.id}/check-out",
-        params={
+        data={
             "entered_plate": "AB-123-CD",
-            "entered_odometer_km": 85000,
+            "entered_odometer_km": "85000",
             "checklist_json": "NOT VALID JSON {{{",
         },
         files={
@@ -1505,9 +1506,9 @@ async def test_check_out_upload_error(
 
         response = await client.patch(
             f"/bookings/{booking.id}/check-out",
-            params={
+            data={
                 "entered_plate": "AB-123-CD",
-                "entered_odometer_km": 85000,
+                "entered_odometer_km": "85000",
                 "checklist_json": checklist_json,
             },
             files={
@@ -1518,7 +1519,7 @@ async def test_check_out_upload_error(
         )
 
     assert response.status_code == 400
-    assert "Donnees invalides" in response.json()["detail"]
+    assert "Invalid data" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

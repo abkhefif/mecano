@@ -297,9 +297,9 @@ async def test_check_out_broad_exception_masks_real_errors(
     token = mechanic_token(mechanic_user)
     response = await client.patch(
         f"/bookings/{booking.id}/check-out",
-        params={
+        data={
             "entered_plate": "AB-123-CD",
-            "entered_odometer_km": 85000,
+            "entered_odometer_km": "85000",
             "checklist_json": bad_checklist,
         },
         files={
@@ -310,7 +310,7 @@ async def test_check_out_broad_exception_masks_real_errors(
     )
     assert response.status_code == 400
     # SEC-010: Generic error message to avoid leaking internal details
-    assert "Donnees invalides" in response.json()["detail"]
+    assert "Invalid data" in response.json()["detail"]
 
 
 # ============================================================
@@ -429,9 +429,9 @@ async def test_check_out_no_plate_validation(
 
         response = await client.patch(
             f"/bookings/{booking.id}/check-out",
-            params={
+            data={
                 "entered_plate": "A" * 500,  # Way too long, should be max 20
-                "entered_odometer_km": -99999,  # Negative, should be >= 0
+                "entered_odometer_km": "-99999",  # Negative, should be >= 0
                 "checklist_json": checklist_json,
             },
             files={
@@ -557,8 +557,8 @@ async def test_mechanic_registration_creates_profile_at_null_island(
     db: AsyncSession,
 ):
     """
-    BUG: Mechanic profile created during registration has city_lat=0.0, city_lng=0.0
-    (Null Island, Gulf of Guinea).
+    FIX VERIFIED: Mechanic profile created during registration now has
+    city_lat=None, city_lng=None instead of 0.0/0.0 (Null Island).
     """
     response = await client.post(
         "/auth/register",
@@ -566,6 +566,7 @@ async def test_mechanic_registration_creates_profile_at_null_island(
             "email": "nullisland_mech@test.com",
             "password": "SecurePass123",
             "role": "mechanic",
+            "cgu_accepted": True,
         },
     )
     assert response.status_code == 201
@@ -578,9 +579,9 @@ async def test_mechanic_registration_creates_profile_at_null_island(
     assert me_response.status_code == 200
     profile = me_response.json()["mechanic_profile"]
     assert profile is not None
-    # BUG: Coordinates are (0, 0) which is in the middle of the ocean
-    assert profile["city_lat"] == 0.0
-    assert profile["city_lng"] == 0.0
+    # FIX: Coordinates are None until the mechanic sets their city
+    assert profile["city_lat"] is None
+    assert profile["city_lng"] is None
     assert profile["city"] == ""
 
 
@@ -814,9 +815,9 @@ async def test_full_booking_lifecycle(
 
         response = await client.patch(
             f"/bookings/{booking_id}/check-out",
-            params={
+            data={
                 "entered_plate": "AB-123-CD",
-                "entered_odometer_km": 85000,
+                "entered_odometer_km": "85000",
                 "checklist_json": checklist_json,
             },
             files={

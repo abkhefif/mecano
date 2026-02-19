@@ -1,12 +1,17 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from pathlib import Path
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
-from jose import JWTError, jwt
+from starlette.requests import Request
+# C-002: jwt is imported directly here (rather than via auth/service.py) because
+# download tokens are a distinct token type with different claims (booking_id,
+# type="download") and short TTL (5 min). Keeping the helper functions
+# (_create_download_token, _verify_download_token) co-located with their
+# only consumer simplifies maintenance.
+import jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -14,6 +19,8 @@ from sqlalchemy.orm import selectinload
 from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.utils.rate_limit import limiter
+from app.models.blacklisted_token import BlacklistedToken
 from app.models.booking import Booking
 from app.models.enums import BookingStatus, UserRole
 from app.models.mechanic_profile import MechanicProfile
@@ -48,8 +55,8 @@ def _create_download_token(booking_id: str, user_id: str) -> str:
     return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
-def _verify_download_token(token: str, booking_id: str) -> str | None:
-    """Verify a download token and return the user_id, or None if invalid."""
+def _verify_download_token(token: str, booking_id: str) -> dict | None:
+    """Verify a download token and return the payload dict, or None if invalid."""
     try:
         payload = jwt.decode(
             token,
@@ -62,8 +69,8 @@ def _verify_download_token(token: str, booking_id: str) -> str | None:
             return None
         if payload.get("booking_id") != booking_id:
             return None
-        return payload.get("sub")
-    except JWTError:
+        return payload
+    except jwt.PyJWTError:
         return None
 
 
@@ -104,7 +111,9 @@ async def _build_receipt_data(booking: Booking) -> dict:
 
 
 @router.get("/receipt/{booking_id}")
+@limiter.limit("10/minute")
 async def get_receipt(
+    request: Request,
     booking_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -144,7 +153,9 @@ async def get_receipt(
 
 
 @router.get("/receipt/{booking_id}/token")
+@limiter.limit("10/minute")
 async def get_receipt_download_token(
+    request: Request,
     booking_id: uuid.UUID,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -172,18 +183,34 @@ async def get_receipt_download_token(
 
 
 @router.get("/receipt/{booking_id}/download")
+@limiter.limit("10/minute")
 async def download_receipt_with_token(
+    request: Request,
     booking_id: uuid.UUID,
     token: str = Query(..., description="Short-lived download token"),
     db: AsyncSession = Depends(get_db),
 ):
     """C-04: Download a receipt PDF using a short-lived download token (no auth header needed)."""
-    user_id = _verify_download_token(token, str(booking_id))
-    if not user_id:
+    token_payload = _verify_download_token(token, str(booking_id))
+    if not token_payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired download token",
         )
+
+    user_id = token_payload.get("sub")
+    jti = token_payload.get("jti")
+
+    # SEC-009: Check if the token has already been used (single-use enforcement)
+    if jti:
+        existing = await db.execute(
+            select(BlacklistedToken).where(BlacklistedToken.jti == jti)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Download token has already been used",
+            )
 
     result = await db.execute(
         select(Booking)
@@ -206,6 +233,17 @@ async def download_receipt_with_token(
 
     booking_data = await _build_receipt_data(booking)
     pdf_bytes = await generate_payment_receipt(booking_data)
+
+    # SEC-009: Blacklist the token JTI to enforce single-use
+    if jti:
+        exp = token_payload.get("exp")
+        expires_at = (
+            datetime.fromtimestamp(exp, tz=timezone.utc)
+            if exp
+            else datetime.now(timezone.utc)
+        )
+        db.add(BlacklistedToken(jti=jti, expires_at=expires_at))
+        await db.flush()
 
     logger.info("receipt_downloaded_via_token", booking_id=str(booking.id), user_id=user_id)
 

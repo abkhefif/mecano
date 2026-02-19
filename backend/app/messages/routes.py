@@ -1,7 +1,8 @@
 import uuid
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from starlette.requests import Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -18,9 +19,13 @@ from app.schemas.message import MessageCreate, MessageResponse, TemplateMessage
 from app.services.notifications import create_notification
 from app.utils.contact_mask import mask_contacts
 from app.utils.display_name import get_display_name
+from app.utils.rate_limit import limiter
 
 logger = structlog.get_logger()
 router = APIRouter()
+
+MAX_TEMPLATE_MESSAGES_PER_BOOKING = 20
+MAX_CUSTOM_MESSAGES_PER_BOOKING = 30
 
 MESSAGING_STATUSES = {
     BookingStatus.CONFIRMED,
@@ -30,7 +35,8 @@ MESSAGING_STATUSES = {
 
 
 @router.get("/messages/templates", response_model=list[TemplateMessage])
-async def get_templates(role: str | None = None):
+@limiter.limit("60/minute")
+async def get_templates(request: Request, role: str | None = None):
     """Return the list of pre-written message templates, optionally filtered by role."""
     if role == UserRole.BUYER.value:
         return BUYER_TEMPLATES
@@ -43,12 +49,19 @@ async def get_templates(role: str | None = None):
     "/bookings/{booking_id}/messages",
     response_model=list[MessageResponse],
 )
+@limiter.limit("60/minute")
 async def get_booking_messages(
+    request: Request,
     booking_id: uuid.UUID,
+    limit: int = Query(50, ge=1, le=100, description="Max messages to return"),
+    offset: int = Query(0, ge=0, le=10000, description="Number of messages to skip"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List messages for a booking. Only the buyer or mechanic of the booking can see them."""
+    """List messages for a booking. Only the buyer or mechanic of the booking can see them.
+
+    R-001/R-008: Supports pagination via limit and offset query parameters.
+    """
     booking = await _get_booking_for_messaging(db, booking_id, user)
 
     result = await db.execute(
@@ -56,6 +69,8 @@ async def get_booking_messages(
         .where(Message.booking_id == booking.id)
         .options(selectinload(Message.sender))
         .order_by(Message.created_at.asc())
+        .offset(offset)
+        .limit(limit)
     )
     messages = result.scalars().all()
 
@@ -67,7 +82,9 @@ async def get_booking_messages(
     response_model=MessageResponse,
     status_code=status.HTTP_201_CREATED,
 )
+@limiter.limit("30/minute")
 async def send_message(
+    request: Request,
     booking_id: uuid.UUID,
     body: MessageCreate,
     user: User = Depends(get_current_user),
@@ -90,7 +107,7 @@ async def send_message(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid template message",
             )
-        # M-06: Limit template messages to 20 per user per booking
+        # M-06: Limit template messages to MAX_TEMPLATE_MESSAGES_PER_BOOKING per user per booking
         template_count_result = await db.execute(
             select(func.count(Message.id)).where(
                 Message.booking_id == booking.id,
@@ -99,13 +116,13 @@ async def send_message(
             )
         )
         template_count = template_count_result.scalar() or 0
-        if template_count >= 20:
+        if template_count >= MAX_TEMPLATE_MESSAGES_PER_BOOKING:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Template message limit reached (20 per booking)",
+                detail=f"Template message limit reached ({MAX_TEMPLATE_MESSAGES_PER_BOOKING} per booking)",
             )
     else:
-        # Anti-spam: limit custom messages to 30 per user per booking
+        # Anti-spam: limit custom messages to MAX_CUSTOM_MESSAGES_PER_BOOKING per user per booking
         custom_count_result = await db.execute(
             select(func.count(Message.id)).where(
                 Message.booking_id == booking.id,
@@ -114,10 +131,10 @@ async def send_message(
             )
         )
         custom_count = custom_count_result.scalar() or 0
-        if custom_count >= 30:
+        if custom_count >= MAX_CUSTOM_MESSAGES_PER_BOOKING:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Limite de messages atteinte (30 par réservation)",
+                detail=f"Limite de messages atteinte ({MAX_CUSTOM_MESSAGES_PER_BOOKING} par réservation)",
             )
         # Mask contact information (phone, email, social media)
         body.content = mask_contacts(body.content)

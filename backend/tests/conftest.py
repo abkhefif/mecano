@@ -25,7 +25,7 @@ from app.models.user import User
 TEST_DB_URL = "sqlite+aiosqlite:///:memory:"
 
 engine = create_async_engine(TEST_DB_URL, echo=False)
-test_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+TestSessionFactory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
 @pytest_asyncio.fixture
@@ -33,7 +33,7 @@ async def db() -> AsyncGenerator[AsyncSession, None]:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    async with test_session() as session:
+    async with TestSessionFactory() as session:
         yield session
 
     async with engine.begin() as conn:

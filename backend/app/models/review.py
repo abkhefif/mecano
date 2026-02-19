@@ -19,11 +19,11 @@ class Review(Base):
     booking_id: Mapped[uuid.UUID] = mapped_column(
         GUID(), ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    reviewer_id: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    reviewer_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
     reviewee_id: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+        GUID(), ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     rating: Mapped[int] = mapped_column(Integer, nullable=False)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -31,5 +31,5 @@ class Review(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     booking: Mapped["Booking"] = relationship("Booking", back_populates="reviews")
-    reviewer: Mapped["User"] = relationship("User", foreign_keys=[reviewer_id])
+    reviewer: Mapped["User | None"] = relationship("User", foreign_keys=[reviewer_id])
     reviewee: Mapped["User"] = relationship("User", foreign_keys=[reviewee_id])

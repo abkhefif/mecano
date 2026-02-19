@@ -1,4 +1,6 @@
+import asyncio
 import uuid
+from html import escape
 
 import httpx
 import structlog
@@ -12,6 +14,17 @@ logger = structlog.get_logger()
 
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 
+_push_client: httpx.AsyncClient | None = None
+
+
+def _get_push_client() -> httpx.AsyncClient:
+    global _push_client
+    if _push_client is None or _push_client.is_closed:
+        _push_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0),
+        )
+    return _push_client
+
 
 async def send_email(to_email: str, subject: str, body: str) -> bool:
     """Send an email via Resend API.
@@ -23,29 +36,28 @@ async def send_email(to_email: str, subject: str, body: str) -> bool:
         return True
 
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.resend.com/emails",
-                headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
-                json={
-                    "from": "eMecano <noreply@emecano.fr>",
-                    "to": [to_email],
-                    "subject": subject,
-                    "html": body,
-                },
-                timeout=10.0,
+        client = _get_push_client()
+        response = await client.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
+            json={
+                "from": "eMecano <noreply@emecano.fr>",
+                "to": [to_email],
+                "subject": subject,
+                "html": body,
+            },
+        )
+        if response.is_success:
+            logger.info("email_sent", to=to_email, subject=subject)
+            return True
+        else:
+            logger.error(
+                "email_send_failed",
+                to=to_email,
+                subject=subject,
+                status_code=response.status_code,
             )
-            if response.status_code == 200:
-                logger.info("email_sent", to=to_email, subject=subject)
-                return True
-            else:
-                logger.error(
-                    "email_send_failed",
-                    to=to_email,
-                    subject=subject,
-                    status_code=response.status_code,
-                )
-                return False
+            return False
     except Exception as exc:
         logger.error("email_send_error", to=to_email, subject=subject, error=str(exc))
         return False
@@ -66,18 +78,27 @@ async def send_push(user_id: str, title: str, body: str, data: dict | None = Non
             logger.info("push_skip_no_token", user_id=user_id)
             return False
 
+        # R-010: Truncate title/body before sending to Expo to avoid
+        # oversized push notification payloads being silently dropped.
+        truncated_title = title[:50] if title else title
+        truncated_body = body[:200] if body else body
+
         payload = {
             "to": user.expo_push_token,
-            "title": title,
-            "body": body,
+            "title": truncated_title,
+            "body": truncated_body,
             "sound": "default",
         }
         if data:
             payload["data"] = data
+            # Add iOS notification category for actionable notifications
+            notification_type = data.get("type")
+            if notification_type == "booking_created":
+                payload["categoryId"] = "booking_request"
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(EXPO_PUSH_URL, json=payload)
-            response.raise_for_status()
+        client = _get_push_client()
+        response = await client.post(EXPO_PUSH_URL, json=payload)
+        response.raise_for_status()
 
         # Parse response to check for push token errors
         try:
@@ -97,6 +118,9 @@ async def send_push(user_id: str, title: str, body: str, data: dict | None = Non
                                 token=user.expo_push_token,
                                 error="DeviceNotRegistered",
                             )
+                            # Cleanup: clear the invalid push token
+                            user.expo_push_token = None
+                            await session.flush()
                         else:
                             logger.warning(
                                 "push_ticket_error",
@@ -138,14 +162,20 @@ async def send_booking_reminder(
     """Send reminder to both parties."""
     time_label = "demain" if hours_before == 24 else "dans 2h"
 
+    # M-02: Escape user-supplied values before inserting into HTML email bodies
+    safe_buyer_name = escape(buyer_name)
+    safe_mechanic_name = escape(mechanic_name)
+    safe_vehicle_info = escape(vehicle_info)
+    safe_meeting_address = escape(meeting_address)
+
     # Email to buyer
     await send_email(
         to_email=buyer_email,
         subject=f"Rappel: Votre controle mecanique {time_label}",
-        body=f"Bonjour {buyer_name},\n\nRappel de votre rendez-vous {time_label}.\n"
+        body=f"Bonjour {safe_buyer_name},\n\nRappel de votre rendez-vous {time_label}.\n"
              f"Date: {slot_date} a {slot_time}\n"
-             f"Vehicule: {vehicle_info}\n"
-             f"Adresse: {meeting_address}\n"
+             f"Vehicule: {safe_vehicle_info}\n"
+             f"Adresse: {safe_meeting_address}\n"
              + (f"\nContact mecanicien: {mechanic_phone}" if hours_before <= 2 and mechanic_phone else "")
              + "\n\nL'equipe eMecano",
     )
@@ -154,10 +184,10 @@ async def send_booking_reminder(
     await send_email(
         to_email=mechanic_email,
         subject=f"Rappel: Controle mecanique {time_label}",
-        body=f"Bonjour {mechanic_name},\n\nRappel de votre rendez-vous {time_label}.\n"
+        body=f"Bonjour {safe_mechanic_name},\n\nRappel de votre rendez-vous {time_label}.\n"
              f"Date: {slot_date} a {slot_time}\n"
-             f"Vehicule: {vehicle_info}\n"
-             f"Adresse: {meeting_address}\n"
+             f"Vehicule: {safe_vehicle_info}\n"
+             f"Adresse: {safe_meeting_address}\n"
              + (f"\nContact acheteur: {buyer_phone}" if hours_before <= 2 and buyer_phone else "")
              + "\n\nL'equipe eMecano",
     )
@@ -176,13 +206,26 @@ async def create_notification(
     """Persist a notification and send a push notification."""
     from app.models.notification import Notification
 
+    # Ensure the notification type is included in the data dict
+    # so the mobile app can route to the correct screen via deep linking
+    push_data = dict(data) if data else {}
+    if "type" not in push_data:
+        # notification_type can be a string or an enum with a .value attribute
+        type_value = notification_type.value if hasattr(notification_type, "value") else notification_type
+        push_data["type"] = type_value
+
     notification = Notification(
         user_id=user_id,
         type=notification_type,
         title=title,
         body=body,
-        data=data,
+        data=push_data,
     )
     db.add(notification)
-    await send_push(str(user_id), title, body, data=data, db=db)
+    await db.flush()
+    # PERF-002: Fire push notification in background to avoid blocking the response
+    # by 100-500ms (Expo API round-trip). The flush above persists the notification.
+    # send_push will open its own DB session (db=None) for token lookup and
+    # DeviceNotRegistered cleanup, so it is safe after the caller's session commits.
+    asyncio.create_task(send_push(str(user_id), title, body, data=push_data))
     return notification

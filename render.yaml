@@ -8,8 +8,7 @@ services:
   - type: redis
     name: emecano-redis
     plan: free
-    maxmemoryPolicy: allkeys-lru
-    ipAllowList: []
+    maxmemoryPolicy: volatile-lru
 
   - type: web
     name: emecano-api
@@ -21,6 +20,7 @@ services:
     buildFilter:
       paths:
         - "backend/**"
+    preDeployCommand: "python -m alembic upgrade head"
     envVars:
       - key: DATABASE_URL
         fromDatabase:
@@ -32,8 +32,36 @@ services:
           type: redis
           property: connectionString
       - key: APP_ENV
-        value: development
+        value: staging
       - key: JWT_SECRET
         generateValue: true
       - key: FRONTEND_URL
         value: https://emecano.fr
+      - key: CORS_ORIGINS
+        value: "https://emecano.fr,https://api.emecano.fr"
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: SENTRY_DSN
+        sync: false
+      - key: R2_ENDPOINT_URL
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_PUBLIC_URL
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: TRUSTED_PROXY_COUNT
+        value: "1"
+      - key: DB_POOL_SIZE
+        value: "3"
+      - key: DB_MAX_OVERFLOW
+        value: "2"
+      - key: WEB_CONCURRENCY
+        value: "1"

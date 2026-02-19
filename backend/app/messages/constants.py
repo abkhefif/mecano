@@ -77,9 +77,6 @@ MECHANIC_TEMPLATES = [
 # Combined list for backward compatibility
 ALL_TEMPLATES = BUYER_TEMPLATES + MECHANIC_TEMPLATES
 
-# Keep backward-compatible default
-TEMPLATES = BUYER_TEMPLATES
-
 # Rebuild ALL_TEMPLATE_MESSAGES to include BOTH sets (used for validation in routes.py)
 ALL_TEMPLATE_MESSAGES = {
     msg for cat in ALL_TEMPLATES for msg in cat["messages"]

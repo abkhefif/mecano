@@ -115,6 +115,12 @@ class NotificationType(str, enum.Enum):
     PROFILE_VERIFICATION = "profile_verification"
 
 
+class ServiceLocation(str, enum.Enum):
+    MOBILE = "mobile"        # Mechanic goes to the client
+    GARAGE = "garage"        # Client comes to mechanic's garage
+    BOTH = "both"            # Both options available
+
+
 class RefusalReason(str, enum.Enum):
     NOT_AVAILABLE = "not_available"
     TOO_FAR = "too_far"
