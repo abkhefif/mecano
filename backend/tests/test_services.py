@@ -349,7 +349,10 @@ async def test_create_login_link_with_stripe():
 
 def test_verify_webhook_signature():
     """Test webhook signature verification delegates to stripe."""
-    with patch("app.services.stripe_service.stripe") as mock_stripe:
+    with patch("app.services.stripe_service.settings") as mock_s, \
+         patch("app.services.stripe_service.stripe") as mock_stripe:
+        mock_s.STRIPE_WEBHOOK_SECRET = "whsec_real_secret_value"
+        mock_s.STRIPE_SECRET_KEY = "sk_test_xxx"
         mock_stripe.Webhook.construct_event.return_value = {"type": "test"}
 
         result = verify_webhook_signature(b"payload", "sig_header")

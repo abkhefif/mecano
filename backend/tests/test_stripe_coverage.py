@@ -268,34 +268,23 @@ async def test_capture_stripe_error_raises_service_error():
 # ============ verify_webhook_signature ============
 
 
-def test_webhook_placeholder_secret_in_production():
-    """Reject placeholder webhook secret in production."""
-    with patch("app.services.stripe_service.settings") as mock_s:
-        mock_s.APP_ENV = "production"
-        mock_s.STRIPE_WEBHOOK_SECRET = "whsec_PLACEHOLDER_test"
-        with pytest.raises(HTTPException) as exc_info:
-            verify_webhook_signature(b"payload", "sig")
-    assert exc_info.value.status_code == 500
-
-
-def test_webhook_placeholder_secret_in_staging():
-    """Reject placeholder webhook secret in staging."""
-    with patch("app.services.stripe_service.settings") as mock_s:
-        mock_s.APP_ENV = "staging"
-        mock_s.STRIPE_WEBHOOK_SECRET = "whsec_PLACEHOLDER_xyz"
-        with pytest.raises(HTTPException) as exc_info:
-            verify_webhook_signature(b"payload", "sig")
-    assert exc_info.value.status_code == 500
+def test_webhook_placeholder_secret_rejected_in_any_env():
+    """Reject placeholder webhook secret in ALL environments."""
+    for env in ("production", "staging", "development"):
+        with patch("app.services.stripe_service.settings") as mock_s:
+            mock_s.STRIPE_WEBHOOK_SECRET = "whsec_PLACEHOLDER_test"
+            with pytest.raises(HTTPException) as exc_info:
+                verify_webhook_signature(b"payload", "sig")
+        assert exc_info.value.status_code == 400
 
 
 def test_webhook_no_secret_configured():
     """Reject webhooks when no secret is set at all."""
     with patch("app.services.stripe_service.settings") as mock_s:
-        mock_s.APP_ENV = "development"
         mock_s.STRIPE_WEBHOOK_SECRET = ""
         with pytest.raises(HTTPException) as exc_info:
             verify_webhook_signature(b"payload", "sig")
-    assert exc_info.value.status_code == 501
+    assert exc_info.value.status_code == 400
 
 
 def test_webhook_valid_secret_calls_construct_event():

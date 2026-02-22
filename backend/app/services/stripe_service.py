@@ -246,22 +246,19 @@ async def create_login_link(stripe_account_id: str) -> str:
 
 def verify_webhook_signature(payload: bytes, sig_header: str) -> stripe.Event:
     """Verify Stripe webhook signature and return the event."""
-    # SEC-008: Reject placeholder webhook secrets in production/staging
-    if (
-        settings.APP_ENV in ("production", "staging")
-        and settings.STRIPE_WEBHOOK_SECRET.startswith("whsec_PLACEHOLDER")
-    ):
-        logger.warning("stripe_webhook_placeholder_secret_detected")
-        raise HTTPException(status_code=500, detail="Webhook verification not configured")
-
-    # SEC-001: Reject webhooks when no secret is configured, even in dev mode.
+    # SEC-008: Reject placeholder or missing webhook secrets in ALL environments.
     # This prevents forged webhook events from bypassing signature verification.
-    if not settings.STRIPE_WEBHOOK_SECRET:
-        logger.error("stripe_webhook_rejected_no_secret")
-        raise HTTPException(
-            status_code=501,
-            detail="Webhook signature verification not configured",
+    if not settings.STRIPE_WEBHOOK_SECRET or settings.STRIPE_WEBHOOK_SECRET.startswith(
+        "whsec_PLACEHOLDER"
+    ):
+        logger.error(
+            "stripe_webhook_rejected_unconfigured",
+            has_secret=bool(settings.STRIPE_WEBHOOK_SECRET),
+            is_placeholder=settings.STRIPE_WEBHOOK_SECRET.startswith("whsec_PLACEHOLDER")
+            if settings.STRIPE_WEBHOOK_SECRET
+            else False,
         )
+        raise HTTPException(status_code=400, detail="Webhook not accepted")
 
     return stripe.Webhook.construct_event(
         payload, sig_header, settings.STRIPE_WEBHOOK_SECRET, api_key=settings.STRIPE_SECRET_KEY

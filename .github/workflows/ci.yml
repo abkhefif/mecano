@@ -34,7 +34,7 @@ jobs:
       - name: Dependency vulnerability scan
         run: |
           pip install pip-audit
-          pip-audit --fix --dry-run || echo "::warning::Vulnerabilities found - review required"
+          pip-audit
 
   test:
     needs: lint

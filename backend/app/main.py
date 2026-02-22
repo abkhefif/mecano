@@ -253,9 +253,12 @@ Instrumentator(
 @app.get("/metrics", include_in_schema=False)
 async def metrics_endpoint(request: Request):
     """Prometheus metrics endpoint (protected by API key)."""
-    from fastapi import Header
     from prometheus_client import generate_latest
     from starlette.responses import Response as StarletteResponse
+
+    # In production/staging, METRICS_API_KEY is required
+    if settings.is_production and not settings.METRICS_API_KEY:
+        raise HTTPException(status_code=503, detail="Metrics not available")
 
     if settings.METRICS_API_KEY:
         api_key = request.headers.get("x-metrics-key", "")
