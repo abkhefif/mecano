@@ -521,11 +521,11 @@ async def test_start_scheduler():
 
     with patch("app.services.scheduler.scheduler") as mock_scheduler:
         start_scheduler()
-        # Should have 10 add_job calls (pending, reminders, overdue, cleanup,
+        # Should have 12 add_job calls (pending, reminders, overdue, cleanup,
         # notify_unverified, cleanup_blacklisted_tokens, reset_no_show_weekly,
         # cleanup_old_notifications, cleanup_expired_push_tokens,
-        # detect_orphaned_files)
-        assert mock_scheduler.add_job.call_count == 10
+        # detect_orphaned_files, cleanup_old_audit_logs, anonymize_old_bookings)
+        assert mock_scheduler.add_job.call_count == 12
         mock_scheduler.start.assert_called_once()
 
 

@@ -62,6 +62,9 @@ services:
         sync: false  # https://cdn.emecano.fr or R2 public bucket URL
       - key: R2_BUCKET_NAME
         sync: false  # e.g. emecano-uploads
+      # OBS-GAP-1: Metrics endpoint protection key
+      - key: METRICS_API_KEY
+        sync: false  # Generate a random API key for /metrics endpoint access
       - key: TRUSTED_PROXY_COUNT
         value: "1"
       - key: DB_POOL_SIZE

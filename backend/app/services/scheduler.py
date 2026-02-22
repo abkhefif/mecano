@@ -105,44 +105,45 @@ async def release_payment(booking_id: str) -> None:
         logger.info("release_payment_lock_held", booking_id=booking_id)
         return
 
-    async with async_session() as db:
-        result = await db.execute(
-            select(Booking).where(Booking.id == booking_id).with_for_update()
-        )
-        booking = result.scalar_one_or_none()
-        if not booking:
-            logger.error("release_payment_booking_not_found", booking_id=booking_id)
-            return
-
-        if booking.status != BookingStatus.VALIDATED:
-            logger.info(
-                "release_payment_skipped",
-                booking_id=booking_id,
-                status=booking.status.value,
+    # SCHED-GAP-1: Release lock on both success and failure paths via try/finally
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(Booking).where(Booking.id == booking_id).with_for_update()
             )
-            return
+            booking = result.scalar_one_or_none()
+            if not booking:
+                logger.error("release_payment_booking_not_found", booking_id=booking_id)
+                return
 
-        try:
-            if booking.stripe_payment_intent_id:
-                await capture_payment_intent(
-                    booking.stripe_payment_intent_id,
-                    idempotency_key=f"release_{booking_id}",
+            if booking.status != BookingStatus.VALIDATED:
+                logger.info(
+                    "release_payment_skipped",
+                    booking_id=booking_id,
+                    status=booking.status.value,
                 )
-        except Exception as e:
-            logger.exception("release_payment_stripe_failed", booking_id=booking_id, error_type=type(e).__name__)
-            return  # Don't update status if Stripe failed; will be retried by catch-all cron
+                return
 
-        booking.status = BookingStatus.COMPLETED
-        booking.payment_released_at = datetime.now(timezone.utc)
-        await db.commit()
+            try:
+                if booking.stripe_payment_intent_id:
+                    await capture_payment_intent(
+                        booking.stripe_payment_intent_id,
+                        idempotency_key=f"release_{booking_id}",
+                    )
+            except Exception as e:
+                logger.exception("release_payment_stripe_failed", booking_id=booking_id, error_type=type(e).__name__)
+                return  # Don't update status if Stripe failed; will be retried by catch-all cron
 
-        from app.metrics import BOOKINGS_COMPLETED, PAYMENTS_CAPTURED
-        PAYMENTS_CAPTURED.inc()
-        BOOKINGS_COMPLETED.inc()
-        SCHEDULER_JOB_RUNS.labels(job_name="release_payment", status="success").inc()
-        logger.info("payment_released", booking_id=booking_id)
+            booking.status = BookingStatus.COMPLETED
+            booking.payment_released_at = datetime.now(timezone.utc)
+            await db.commit()
 
-        # REDIS-2: Release lock early after success to free Redis memory
+            from app.metrics import BOOKINGS_COMPLETED, PAYMENTS_CAPTURED
+            PAYMENTS_CAPTURED.inc()
+            BOOKINGS_COMPLETED.inc()
+            SCHEDULER_JOB_RUNS.labels(job_name="release_payment", status="success").inc()
+            logger.info("payment_released", booking_id=booking_id)
+    finally:
         await _release_scheduler_lock(f"release_payment_{booking_id}")
 
 
@@ -364,6 +365,7 @@ async def send_reminders() -> None:
     """Send 24h and 2h reminders for confirmed bookings."""
     if not await _acquire_scheduler_lock("send_reminders"):
         return
+    SCHEDULER_JOB_RUNS.labels(job_name="send_reminders", status="success").inc()
     async with async_session() as db:
         now = datetime.now(timezone.utc)
 
@@ -427,6 +429,7 @@ async def cleanup_old_webhook_events() -> None:
         )
         count = result.rowcount
         await db.commit()
+        SCHEDULER_JOB_RUNS.labels(job_name="cleanup_old_webhook_events", status="success").inc()
         if count:
             logger.info("webhook_events_cleaned_up", deleted_count=count)
 
@@ -454,12 +457,13 @@ async def notify_unverified_mechanics() -> None:
             .scalar_subquery()
         )
 
+        # SCHED-GAP-3: Limit batch size to bound memory usage
         result = await db.execute(
             select(MechanicProfile).where(
                 MechanicProfile.identity_document_url.is_(None),
                 MechanicProfile.is_identity_verified == False,  # noqa: E712  # R-002: target unverified mechanics
                 MechanicProfile.user_id.notin_(recent_notif_subq),
-            )
+            ).limit(SCHEDULER_BATCH_SIZE)
         )
         profiles = result.scalars().all()
 
@@ -481,6 +485,7 @@ async def notify_unverified_mechanics() -> None:
             notified_count += 1
 
         await db.commit()
+        SCHEDULER_JOB_RUNS.labels(job_name="notify_unverified_mechanics", status="success").inc()
         logger.info(
             "notify_unverified_mechanics_done",
             total_found=len(profiles),
@@ -499,24 +504,30 @@ async def cleanup_expired_blacklisted_tokens() -> None:
         )
         count = result.rowcount
         await db.commit()
+        SCHEDULER_JOB_RUNS.labels(job_name="cleanup_expired_blacklisted_tokens", status="success").inc()
         if count:
             logger.info("blacklisted_tokens_cleaned_up", deleted_count=count)
 
 
 async def cleanup_old_notifications() -> None:
-    """Delete read notifications older than 90 days."""
+    """Delete notifications older than 90 days (both read and unread).
+
+    GDPR-GAP-3: Previously only purged read notifications, leaving unread ones
+    indefinitely. Now purges all notifications older than 90 days regardless of
+    read status, ensuring consistent data retention.
+    """
     if not await _acquire_scheduler_lock("cleanup_old_notifications"):
         return
     async with async_session() as db:
         cutoff = datetime.now(timezone.utc) - timedelta(days=90)
         result = await db.execute(
             delete(Notification).where(
-                Notification.is_read == True,  # noqa: E712
                 Notification.created_at < cutoff,
             )
         )
         count = result.rowcount
         await db.commit()
+        SCHEDULER_JOB_RUNS.labels(job_name="cleanup_old_notifications", status="success").inc()
         if count:
             logger.info("old_notifications_cleaned_up", deleted_count=count)
 
@@ -538,6 +549,7 @@ async def cleanup_expired_push_tokens() -> None:
         )
         cleared_count = result.rowcount
         await db.commit()
+        SCHEDULER_JOB_RUNS.labels(job_name="cleanup_expired_push_tokens", status="success").inc()
         if cleared_count:
             logger.info("expired_push_tokens_cleared", cleared_count=cleared_count)
 
@@ -547,20 +559,30 @@ async def reset_no_show_weekly() -> None:
     if not await _acquire_scheduler_lock("reset_no_show_weekly"):
         return
     async with async_session() as db:
+        # SCHED-GAP-4: Add batch limit and per-item commit for resilience
         result = await db.execute(
             select(MechanicProfile).where(
                 MechanicProfile.no_show_count > 0,
                 MechanicProfile.last_no_show_at.isnot(None),
-            )
+            ).limit(SCHEDULER_BATCH_SIZE)
         )
         profiles = result.scalars().all()
         reset_count = 0
         for profile in profiles:
-            old_count = profile.no_show_count
-            await reset_no_show_if_eligible(db, profile)
-            if profile.no_show_count != old_count:
-                reset_count += 1
-        await db.commit()
+            try:
+                old_count = profile.no_show_count
+                await reset_no_show_if_eligible(db, profile)
+                if profile.no_show_count != old_count:
+                    reset_count += 1
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                logger.exception(
+                    "reset_no_show_failed",
+                    mechanic_id=str(profile.id),
+                    error_type=type(e).__name__,
+                )
+        SCHEDULER_JOB_RUNS.labels(job_name="reset_no_show_weekly", status="success").inc()
         if reset_count:
             logger.info("no_show_weekly_reset_done", reset_count=reset_count)
 
@@ -746,6 +768,7 @@ async def detect_orphaned_files() -> None:
             errors += 1
             logger.exception("orphaned_file_error", key=key)
 
+    SCHEDULER_JOB_RUNS.labels(job_name="detect_orphaned_files", status="success").inc()
     logger.info(
         "orphaned_files_done",
         total=len(orphans),
@@ -753,6 +776,60 @@ async def detect_orphaned_files() -> None:
         skipped_grace=skipped,
         errors=errors,
     )
+
+
+async def cleanup_old_audit_logs() -> None:
+    """GDPR-GAP-1: Delete audit logs older than 3 years.
+
+    French law requires retention of contract-related records for 3 years
+    (Code de commerce, Art. L110-4). Audit logs older than this are purged.
+    """
+    if not await _acquire_scheduler_lock("cleanup_old_audit_logs"):
+        return
+    async with async_session() as db:
+        from app.models.audit_log import AuditLog
+        cutoff = datetime.now(timezone.utc) - timedelta(days=3 * 365)
+        result = await db.execute(
+            delete(AuditLog).where(AuditLog.created_at < cutoff)
+        )
+        count = result.rowcount
+        await db.commit()
+        SCHEDULER_JOB_RUNS.labels(job_name="cleanup_old_audit_logs", status="success").inc()
+        if count:
+            logger.info("old_audit_logs_cleaned_up", deleted_count=count)
+
+
+async def anonymize_old_bookings() -> None:
+    """GDPR-GAP-2: Anonymize personal data in bookings older than 3 years.
+
+    Retains the booking record for financial audit purposes but clears
+    personal data fields (vehicle info, meeting address, VIN).
+    French contract law (Code civil, Art. 2224) mandates 3-year retention.
+    """
+    if not await _acquire_scheduler_lock("anonymize_old_bookings"):
+        return
+    async with async_session() as db:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=3 * 365)
+        result = await db.execute(
+            update(Booking)
+            .where(
+                Booking.status.in_([BookingStatus.COMPLETED, BookingStatus.CANCELLED]),
+                Booking.created_at < cutoff,
+                Booking.vehicle_brand != "[anonymized]",  # Skip already anonymized
+            )
+            .values(
+                vehicle_brand="[anonymized]",
+                vehicle_model="[anonymized]",
+                vehicle_year=0,
+                vehicle_plate=None,
+                meeting_address="[anonymized]",
+            )
+        )
+        count = result.rowcount
+        await db.commit()
+        SCHEDULER_JOB_RUNS.labels(job_name="anonymize_old_bookings", status="success").inc()
+        if count:
+            logger.info("old_bookings_anonymized", anonymized_count=count)
 
 
 def start_scheduler() -> None:
@@ -850,6 +927,28 @@ def start_scheduler() -> None:
         hour=3,
         minute=0,
         id="detect_orphaned_files",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    # GDPR-GAP-1: Monthly cleanup of audit logs older than 3 years
+    scheduler.add_job(
+        cleanup_old_audit_logs,
+        "cron",
+        day=1,
+        hour=2,
+        minute=0,
+        id="cleanup_old_audit_logs",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    # GDPR-GAP-2: Monthly anonymization of old completed bookings (3-year retention)
+    scheduler.add_job(
+        anonymize_old_bookings,
+        "cron",
+        day=1,
+        hour=2,
+        minute=30,
+        id="anonymize_old_bookings",
         replace_existing=True,
         misfire_grace_time=3600,
     )

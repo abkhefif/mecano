@@ -2,8 +2,6 @@ from starlette.requests import Request
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-import os
-
 
 def get_real_ip(request: Request) -> str:
     """Extract the real client IP, respecting TRUSTED_PROXY_COUNT.
@@ -46,7 +44,16 @@ def _get_storage_uri():
     return None
 
 
-_is_dev = os.getenv("APP_ENV", "development") == "development"
+def _is_dev_env() -> bool:
+    """GAP-RL-01: Use validated settings.APP_ENV instead of raw os.getenv."""
+    try:
+        from app.config import settings
+        return settings.APP_ENV == "development"
+    except Exception:
+        return True  # Safe default: dev mode has higher rate limits
+
+
+_is_dev = _is_dev_env()
 
 limiter = Limiter(
     key_func=get_real_ip,
