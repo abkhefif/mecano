@@ -105,27 +105,13 @@ def upgrade() -> None:
         "uses_count >= 0",
     )
 
-    # ── Performance indexes ──
-    # Notifications: composite for pagination (user_id, created_at)
-    op.create_index(
-        "ix_notification_user_created",
-        "notifications",
-        ["user_id", "created_at"],
-    )
-    # Notifications: composite for unread queries (user_id, is_read)
-    op.create_index(
-        "ix_notification_user_is_read",
-        "notifications",
-        ["user_id", "is_read"],
-    )
-    # Dispute cases: status for admin queries
-    op.create_index("ix_dispute_cases_status", "dispute_cases", ["status"])
-    # Audit logs: created_at for compliance
-    op.create_index("ix_audit_logs_created_at", "audit_logs", ["created_at"])
-    # Audit logs: admin_user_id for audit trail
-    op.create_index("ix_audit_logs_admin_user_id", "audit_logs", ["admin_user_id"])
-    # Blacklisted tokens: expires_at for cleanup job
-    op.create_index("ix_blacklisted_tokens_expires_at", "blacklisted_tokens", ["expires_at"])
+    # ── Performance indexes (IF NOT EXISTS to avoid conflicts with earlier migrations) ──
+    op.execute("CREATE INDEX IF NOT EXISTS ix_notification_user_created ON notifications (user_id, created_at)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_notification_user_is_read ON notifications (user_id, is_read)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_dispute_cases_status ON dispute_cases (status)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_audit_logs_created_at ON audit_logs (created_at)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_audit_logs_admin_user_id ON audit_logs (admin_user_id)")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_blacklisted_tokens_expires_at ON blacklisted_tokens (expires_at)")
 
 
 def downgrade() -> None:
