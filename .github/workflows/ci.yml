@@ -91,7 +91,8 @@ jobs:
         run: pytest --cov=app --cov-report=term-missing --tb=short -q
 
   deploy:
-    needs: test
+    # CI-2: Block deploy if mobile checks fail
+    needs: [test, mobile-check]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master' && github.event_name == 'push'
 

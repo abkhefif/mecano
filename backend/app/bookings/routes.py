@@ -1389,20 +1389,19 @@ async def update_location(
     request: Request,
     booking_id: uuid.UUID,
     body: LocationUpdate,
-    user: User = Depends(get_current_user),
+    # O-3: Use get_current_mechanic to enforce suspension check (was get_current_user)
+    mechanic_tuple: tuple[User, MechanicProfile] = Depends(get_current_mechanic),
     db: AsyncSession = Depends(get_db),
 ):
     """Mechanic sends their current GPS position for real-time tracking."""
+    user, mechanic = mechanic_tuple
+
     booking = await db.get(Booking, booking_id)
     if not booking:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found")
 
     # Only the mechanic of this booking can update location
-    profile_result = await db.execute(
-        select(MechanicProfile).where(MechanicProfile.user_id == user.id)
-    )
-    mechanic = profile_result.scalar_one_or_none()
-    if not mechanic or booking.mechanic_id != mechanic.id:
+    if booking.mechanic_id != mechanic.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
 
     # Must be CONFIRMED status

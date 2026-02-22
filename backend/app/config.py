@@ -17,6 +17,14 @@ class Settings(BaseSettings):
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
 
+    @field_validator("DB_POOL_SIZE", "DB_MAX_OVERFLOW")
+    @classmethod
+    def validate_pool_sizes(cls, v: int) -> int:
+        """DB-1: Prevent misconfiguration that silently disables the connection pool."""
+        if v < 1:
+            raise ValueError("DB_POOL_SIZE and DB_MAX_OVERFLOW must be at least 1")
+        return v
+
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 

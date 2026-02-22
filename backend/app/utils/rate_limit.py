@@ -37,7 +37,8 @@ def _get_storage_uri():
         if settings.REDIS_URL:
             # Verify Redis is reachable before returning URI
             import redis
-            r = redis.from_url(settings.REDIS_URL, socket_connect_timeout=1)
+            # REDIS-1: Reduce blocking timeout from 1s to 0.2s at startup
+            r = redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.2)
             r.ping()
             return settings.REDIS_URL
     except Exception:

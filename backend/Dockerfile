@@ -1,4 +1,5 @@
-FROM python:3.12.8-slim
+# CI-1: Pin base image by digest for reproducible builds and supply-chain safety
+FROM python:3.12.8-slim@sha256:b280ab8a1b1c5c77bd77afd9941007f295b1b6deaca97ff26d75cd69621f0655
 
 WORKDIR /app
 

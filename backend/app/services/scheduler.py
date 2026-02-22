@@ -80,6 +80,19 @@ async def _acquire_scheduler_lock(job_name: str, ttl: int = 300) -> bool:
         return True
 
 
+async def _release_scheduler_lock(job_name: str) -> None:
+    """REDIS-2: Release a scheduler lock early after successful completion."""
+    if not settings.REDIS_URL:
+        return
+    try:
+        import redis.asyncio as aioredis
+        r = aioredis.from_url(settings.REDIS_URL, socket_connect_timeout=2)
+        await r.delete(f"scheduler_lock:{job_name}")
+        await r.aclose()
+    except Exception:
+        pass  # Lock will expire naturally via TTL
+
+
 async def release_payment(booking_id: str) -> None:
     """Capture the held payment and transfer to mechanic, 2h after validation.
 
@@ -128,6 +141,9 @@ async def release_payment(booking_id: str) -> None:
         BOOKINGS_COMPLETED.inc()
         SCHEDULER_JOB_RUNS.labels(job_name="release_payment", status="success").inc()
         logger.info("payment_released", booking_id=booking_id)
+
+        # REDIS-2: Release lock early after success to free Redis memory
+        await _release_scheduler_lock(f"release_payment_{booking_id}")
 
 
 SCHEDULER_BATCH_SIZE = 20
