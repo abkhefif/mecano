@@ -169,6 +169,14 @@ async def create_booking(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Booking must be at least {settings.BOOKING_MINIMUM_ADVANCE_HOURS} hours in advance",
         )
+    # FIN-04: Stripe authorizations expire after 7 days. Reject bookings too
+    # far in the future to prevent capture failures on expired authorizations.
+    max_advance = timedelta(days=settings.STRIPE_AUTH_MAX_ADVANCE_DAYS)
+    if _check_datetime - datetime.now(timezone.utc) > max_advance:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Booking cannot be more than {settings.STRIPE_AUTH_MAX_ADVANCE_DAYS} days in advance due to payment authorization limits",
+        )
 
     # If buyer chose a sub-slot within a larger availability window, split it
     booked_slot = availability  # by default, book the whole slot
@@ -517,8 +525,14 @@ async def refuse_booking(
     booking.refund_percentage = 100
     booking.refund_amount = refund_amount
 
-    if booking.availability:
-        booking.availability.is_booked = False
+    # PERF-01: Lock availability separately to prevent concurrent is_booked race
+    if booking.availability_id:
+        avail_result = await db.execute(
+            select(Availability).where(Availability.id == booking.availability_id).with_for_update()
+        )
+        avail = avail_result.scalar_one_or_none()
+        if avail:
+            avail.is_booked = False
 
     await db.flush()
 
@@ -641,9 +655,14 @@ async def cancel_booking(
     booking.refund_percentage = refund_pct
     booking.refund_amount = refund_amount
 
-    # Release the availability slot
-    if booking.availability:
-        booking.availability.is_booked = False
+    # PERF-01: Lock availability separately to prevent concurrent is_booked race
+    if booking.availability_id:
+        avail_result = await db.execute(
+            select(Availability).where(Availability.id == booking.availability_id).with_for_update()
+        )
+        avail = avail_result.scalar_one_or_none()
+        if avail:
+            avail.is_booked = False
 
     await db.flush()
 

@@ -208,14 +208,24 @@ async def check_pending_acceptances() -> None:
                 # isolation. On failure, rollback resets the session state
                 # so subsequent bookings are not affected by stale state.
                 if booking.stripe_payment_intent_id:
-                    await cancel_payment_intent(booking.stripe_payment_intent_id)
+                    # FIN-05: Idempotency key prevents duplicate Stripe cancellations on retries
+                    await cancel_payment_intent(
+                        booking.stripe_payment_intent_id,
+                        idempotency_key=f"pending_expire_{booking.id}",
+                    )
 
                 booking.status = BookingStatus.CANCELLED
                 booking.cancelled_at = datetime.now(timezone.utc)
                 booking.cancelled_by = "mechanic"
 
-                if booking.availability:
-                    booking.availability.is_booked = False
+                # PERF-01: Lock availability row separately before modifying is_booked
+                if booking.availability_id:
+                    avail_result = await db.execute(
+                        select(Availability).where(Availability.id == booking.availability_id).with_for_update()
+                    )
+                    avail = avail_result.scalar_one_or_none()
+                    if avail:
+                        avail.is_booked = False
 
                 await db.commit()
                 SCHEDULER_JOB_RUNS.labels(job_name="check_pending_acceptances", status="success").inc()

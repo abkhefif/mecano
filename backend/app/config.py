@@ -102,6 +102,8 @@ class Settings(BaseSettings):
     MAX_CHECK_IN_CODE_ATTEMPTS: int = 5
     CANCELLATION_FULL_REFUND_HOURS: int = 24
     CANCELLATION_PARTIAL_REFUND_HOURS: int = 12
+    # FIN-04: Stripe authorizations expire after 7 days; cap booking advance to 6
+    STRIPE_AUTH_MAX_ADVANCE_DAYS: int = 6
 
     @model_validator(mode="after")
     def normalize_database_url(self) -> "Settings":

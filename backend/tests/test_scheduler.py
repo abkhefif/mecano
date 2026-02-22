@@ -226,20 +226,27 @@ async def test_check_pending_acceptances():
     mock_avail = MagicMock()
     mock_avail.is_booked = True
 
+    booking_id = uuid.uuid4()
+    avail_id = uuid.uuid4()
     mock_booking = MagicMock()
-    mock_booking.id = uuid.uuid4()
+    mock_booking.id = booking_id
     mock_booking.status = BookingStatus.PENDING_ACCEPTANCE
     mock_booking.stripe_payment_intent_id = "pi_mock_pending"
     mock_booking.mechanic_id = uuid.uuid4()
     mock_booking.availability = mock_avail
+    mock_booking.availability_id = avail_id
 
     mock_scalars = MagicMock()
     mock_scalars.all.return_value = [mock_booking]
     mock_result = MagicMock()
     mock_result.scalars.return_value = mock_scalars
 
+    # Second execute call returns the locked availability row
+    mock_avail_result = MagicMock()
+    mock_avail_result.scalar_one_or_none.return_value = mock_avail
+
     mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_db.execute = AsyncMock(side_effect=[mock_result, mock_avail_result])
     mock_db.commit = AsyncMock()
 
     mock_session_ctx = AsyncMock()
@@ -250,7 +257,11 @@ async def test_check_pending_acceptances():
          patch("app.services.scheduler.cancel_payment_intent", new_callable=AsyncMock) as mock_cancel, \
          patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         await check_pending_acceptances()
-        mock_cancel.assert_called_once_with("pi_mock_pending")
+        # FIN-05: Now called with idempotency key
+        mock_cancel.assert_called_once_with(
+            "pi_mock_pending",
+            idempotency_key=f"pending_expire_{booking_id}",
+        )
         assert mock_booking.status == BookingStatus.CANCELLED
         assert mock_avail.is_booked is False
 
