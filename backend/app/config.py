@@ -8,6 +8,8 @@ _WEAK_SECRETS = {"changeme", "change-me", "secret", "change-this-to-a-long-rando
 
 _DEFAULT_DATABASE_URL = "postgresql+asyncpg://emecano:emecano_password@localhost:5432/emecano"
 
+_SAFE_JWT_ALGORITHMS = {"HS256", "HS384", "HS512", "RS256", "RS384", "RS512", "ES256", "ES384", "ES512"}
+
 
 class Settings(BaseSettings):
     # Database
@@ -21,6 +23,15 @@ class Settings(BaseSettings):
     # JWT
     JWT_SECRET: str  # Required — no default, must be set in .env
     JWT_ALGORITHM: str = "HS256"
+
+    @field_validator("JWT_ALGORITHM")
+    @classmethod
+    def validate_jwt_algorithm(cls, v: str) -> str:
+        if v.lower() == "none":
+            raise ValueError("JWT_ALGORITHM 'none' is not permitted")
+        if v not in _SAFE_JWT_ALGORITHMS:
+            raise ValueError(f"JWT_ALGORITHM '{v}' is not in the approved list: {_SAFE_JWT_ALGORITHMS}")
+        return v
 
     @field_validator("JWT_SECRET")
     @classmethod

@@ -31,6 +31,12 @@ async def create_payment_intent(
 
     Returns dict with 'id' and 'client_secret'.
     """
+    # FIN-02: Validate inputs before calling Stripe API
+    if amount_cents <= 0:
+        raise ValueError("amount_cents must be positive")
+    if commission_cents < 0 or commission_cents > amount_cents:
+        raise ValueError(f"commission_cents ({commission_cents}) must be >= 0 and <= amount_cents ({amount_cents})")
+
     if not settings.STRIPE_SECRET_KEY:
         # No Stripe key at all: full mock mode
         logger.info("stripe_mock_payment_intent", amount=amount_cents)
@@ -120,6 +126,36 @@ async def refund_payment_intent(
         timeout=15.0,
     )
     if intent.status != "succeeded":
+        # FIN-03: Handle partial refund on uncaptured PI correctly.
+        # If partial amount requested and PI is capturable, capture only the
+        # non-refunded portion (Stripe releases the remainder automatically).
+        if amount_cents is not None and intent.status == "requires_capture":
+            amount_to_capture = intent.amount - amount_cents
+            if amount_to_capture <= 0:
+                # Refund >= full amount: just cancel to release all funds
+                logger.info("stripe_partial_refund_as_full_cancel", intent_id=payment_intent_id)
+            else:
+                capture_params: dict = {
+                    "amount_to_capture": amount_to_capture,
+                    "api_key": settings.STRIPE_SECRET_KEY,
+                }
+                if idempotency_key:
+                    capture_params["idempotency_key"] = f"partcap_{idempotency_key}"
+                captured = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        stripe.PaymentIntent.capture, payment_intent_id, **capture_params
+                    ),
+                    timeout=15.0,
+                )
+                logger.info(
+                    "stripe_partial_capture_for_refund",
+                    intent_id=payment_intent_id,
+                    captured=amount_to_capture,
+                    released=amount_cents,
+                )
+                return {"id": captured.id, "status": "partially_captured"}
+
+        # Full refund on uncaptured PI: cancel to release hold
         logger.info("stripe_refund_as_cancel", intent_id=payment_intent_id, status=intent.status)
         cancel_params: dict = {"api_key": settings.STRIPE_SECRET_KEY}
         if idempotency_key:

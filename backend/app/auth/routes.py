@@ -465,6 +465,17 @@ async def refresh_tokens(request: Request, body: RefreshRequest, db: AsyncSessio
             detail="User not found",
         )
 
+    # SEC-04: Reject refresh tokens issued before a password change
+    if user.password_changed_at:
+        refresh_iat = refresh_payload.get("iat")
+        if refresh_iat:
+            issued_at = datetime.fromtimestamp(refresh_iat, tz=timezone.utc)
+            if issued_at < user.password_changed_at:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Refresh token invalidated by password change",
+                )
+
     logger.info("token_refreshed", user_id=user_id)
     return TokenResponse(
         access_token=create_access_token(user_id),

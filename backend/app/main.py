@@ -187,9 +187,8 @@ else:
         allow_headers=["*"],
     )
 
-# SEC-011: Enable security headers in both production and staging
-if settings.APP_ENV != "development":
-    app.add_middleware(SecurityHeadersMiddleware)
+# SEC-011: Security headers applied in ALL environments; HSTS only in production
+app.add_middleware(SecurityHeadersMiddleware, is_production=settings.is_production)
 
 
 _REQUEST_ID_RE = _re.compile(r"^[a-zA-Z0-9\-]{1,64}$")

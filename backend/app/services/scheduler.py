@@ -89,7 +89,7 @@ async def release_payment(booking_id: str) -> None:
 
     async with async_session() as db:
         result = await db.execute(
-            select(Booking).where(Booking.id == booking_id)
+            select(Booking).where(Booking.id == booking_id).with_for_update()
         )
         booking = result.scalar_one_or_none()
         if not booking:
