@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -322,8 +323,14 @@ async def pending_verification(
     total_result = await db.execute(count_stmt)
     total = total_result.scalar() or 0
 
+    # PERF-08: Parallelize presigned URL generation instead of sequential awaits
     mechanics_list = []
     for p in profiles:
+        id_url, selfie_url, cv_url = await asyncio.gather(
+            get_sensitive_url(p.identity_document_url),
+            get_sensitive_url(p.selfie_with_id_url),
+            get_sensitive_url(p.cv_url),
+        )
         mechanics_list.append({
             "id": str(p.id),
             "user_id": str(p.user_id),
@@ -331,9 +338,9 @@ async def pending_verification(
             "first_name": p.user.first_name if p.user else None,
             "last_name": p.user.last_name if p.user else None,
             "city": p.city,
-            "identity_document_url": await get_sensitive_url(p.identity_document_url),
-            "selfie_with_id_url": await get_sensitive_url(p.selfie_with_id_url),
-            "cv_url": await get_sensitive_url(p.cv_url),
+            "identity_document_url": id_url,
+            "selfie_with_id_url": selfie_url,
+            "cv_url": cv_url,
             "created_at": p.created_at.isoformat() if p.created_at else None,
         })
 

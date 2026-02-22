@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.database import async_session
+from app.utils.log_mask import mask_email
 
 logger = structlog.get_logger()
 
@@ -36,7 +37,7 @@ async def send_email(to_email: str, subject: str, body: str) -> bool:
     If RESEND_API_KEY is not configured, gracefully logs and returns True (dev mode).
     """
     if not settings.RESEND_API_KEY:
-        logger.info("email_send_dev_mode", to=to_email, subject=subject, body_preview=body[:100])
+        logger.info("email_send_dev_mode", to=mask_email(to_email), subject=subject)
         return True
 
     try:
@@ -52,18 +53,18 @@ async def send_email(to_email: str, subject: str, body: str) -> bool:
             },
         )
         if response.is_success:
-            logger.info("email_sent", to=to_email, subject=subject)
+            logger.info("email_sent", to=mask_email(to_email), subject=subject)
             return True
         else:
             logger.error(
                 "email_send_failed",
-                to=to_email,
+                to=mask_email(to_email),
                 subject=subject,
                 status_code=response.status_code,
             )
             return False
     except Exception as exc:
-        logger.error("email_send_error", to=to_email, subject=subject, error=str(exc))
+        logger.error("email_send_error", to=mask_email(to_email), subject=subject, error=str(exc))
         return False
 
 

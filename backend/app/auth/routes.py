@@ -278,6 +278,10 @@ async def register(request: Request, body: RegisterRequest, db: AsyncSession = D
     verification_token = create_email_verification_token(user.email)
     await send_verification_email(user.email, verification_token)
 
+    # PERF-09: Increment Prometheus registration counter
+    from app.metrics import USERS_REGISTERED
+    USERS_REGISTERED.labels(role=body.role.value).inc()
+
     logger.info("user_registered", user_id=str(user.id), role=body.role.value)
 
     user_id_str = str(user.id)

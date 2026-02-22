@@ -25,6 +25,7 @@ from app.services.stripe_service import (
     capture_payment_intent,
     create_connect_account,
     create_login_link,
+    refund_payment_intent,
     verify_webhook_signature,
 )
 
@@ -332,11 +333,17 @@ async def resolve_dispute(
 
     try:
         if body.resolution == "buyer":
-            # Refund to buyer
+            # FIN-08: Use refund_payment_intent which handles both captured (refund)
+            # and uncaptured (cancel) PIs correctly, including partial refunds
             new_status = BookingStatus.CANCELLED
             validate_transition(booking.status, new_status)
             if booking.stripe_payment_intent_id:
-                await cancel_payment_intent(booking.stripe_payment_intent_id)
+                await refund_payment_intent(
+                    booking.stripe_payment_intent_id,
+                    idempotency_key=f"dispute_resolve_{dispute.id}",
+                )
+                from app.metrics import PAYMENTS_REFUNDED
+                PAYMENTS_REFUNDED.inc()
             dispute.status = DisputeStatus.RESOLVED_BUYER
             booking.status = new_status
 

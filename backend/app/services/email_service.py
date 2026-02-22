@@ -13,6 +13,7 @@ import structlog
 import jwt
 
 from app.config import settings
+from app.utils.log_mask import mask_email
 
 logger = structlog.get_logger()
 
@@ -80,7 +81,7 @@ async def send_password_reset_email(to_email: str, reset_token: str) -> bool:
         logger.warning(
             "resend_api_key_not_set",
             msg="RESEND_API_KEY not configured, skipping email send (dev mode)",
-            email=to_email,
+            email=mask_email(to_email),
         )
         return False
 
@@ -111,17 +112,17 @@ async def send_password_reset_email(to_email: str, reset_token: str) -> bool:
             },
         )
         if response.is_success:
-            logger.info("password_reset_email_sent", email=to_email)
+            logger.info("password_reset_email_sent", email=mask_email(to_email))
             return True
         else:
             logger.error(
                 "password_reset_email_failed",
-                email=to_email,
+                email=mask_email(to_email),
                 status_code=response.status_code,
             )
             return False
     except Exception as exc:
-        logger.error("password_reset_email_error", email=to_email, error=str(exc))
+        logger.error("password_reset_email_error", email=mask_email(to_email), error=str(exc))
         return False
 
 
@@ -135,7 +136,7 @@ async def send_verification_email(email: str, token: str) -> bool:
         logger.warning(
             "resend_api_key_not_set",
             msg="RESEND_API_KEY not configured, skipping email send (dev mode)",
-            email=email,
+            email=mask_email(email),
         )
         return False
 
@@ -165,15 +166,15 @@ async def send_verification_email(email: str, token: str) -> bool:
             },
         )
         if response.is_success:
-            logger.info("verification_email_sent", email=email)
+            logger.info("verification_email_sent", email=mask_email(email))
             return True
         else:
             logger.error(
                 "verification_email_failed",
-                email=email,
+                email=mask_email(email),
                 status_code=response.status_code,
             )
             return False
     except Exception as exc:
-        logger.error("verification_email_error", email=email, error=str(exc))
+        logger.error("verification_email_error", email=mask_email(email), error=str(exc))
         return False

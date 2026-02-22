@@ -181,6 +181,9 @@ async def refund_payment_intent(
     refund = await asyncio.wait_for(
         asyncio.to_thread(stripe.Refund.create, **params), timeout=15.0
     )
+    # PERF-09: Increment Prometheus refund counter
+    from app.metrics import PAYMENTS_REFUNDED
+    PAYMENTS_REFUNDED.inc()
     logger.info("stripe_refund_created", refund_id=refund.id, intent_id=payment_intent_id)
     return {"id": refund.id, "status": refund.status}
 
@@ -235,7 +238,8 @@ async def capture_payment_intent(payment_intent_id: str, idempotency_key: str | 
 async def create_connect_account(email: str) -> dict:
     """Create a Stripe Connect Express account for a mechanic."""
     if not settings.STRIPE_SECRET_KEY:
-        logger.info("stripe_mock_connect_account", email=email)
+        from app.utils.log_mask import mask_email
+        logger.info("stripe_mock_connect_account", email=mask_email(email))
         return {
             "account_id": "acct_mock_123",
             "onboarding_url": "https://connect.stripe.com/mock-onboarding",

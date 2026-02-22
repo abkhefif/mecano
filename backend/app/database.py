@@ -19,7 +19,8 @@ if (
 
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=settings.APP_DEBUG,
+    # INFRA-09: Only echo SQL in development to prevent query logging in staging/prod
+    echo=settings.APP_DEBUG and settings.APP_ENV == "development",
     pool_pre_ping=True,
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,

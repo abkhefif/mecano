@@ -37,12 +37,16 @@ if settings.REDIS_URL:
         from urllib.parse import urlparse
         from apscheduler.jobstores.redis import RedisJobStore
         _parsed = urlparse(settings.REDIS_URL)
-        _jobstores["default"] = RedisJobStore(
-            host=_parsed.hostname or "localhost",
-            port=_parsed.port or 6379,
-            db=int(_parsed.path.lstrip("/") or 0),
-            password=_parsed.password,
-        )
+        # INFRA-10: Pass ssl=True when using rediss:// (TLS) to preserve encryption
+        _redis_kwargs: dict = {
+            "host": _parsed.hostname or "localhost",
+            "port": _parsed.port or 6379,
+            "db": int(_parsed.path.lstrip("/") or 0),
+            "password": _parsed.password,
+        }
+        if _parsed.scheme == "rediss":
+            _redis_kwargs["ssl"] = True
+        _jobstores["default"] = RedisJobStore(**_redis_kwargs)
         logger.info("scheduler_using_redis_jobstore", redis_url="[redacted]")
     except Exception as exc:
         # Connection refused, missing package, etc. -- fall back to MemoryJobStore.
