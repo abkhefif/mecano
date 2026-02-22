@@ -11,8 +11,11 @@ def get_real_ip(request: Request) -> str:
     AUD-001: When TRUSTED_PROXY_COUNT is 0 (default), ignore X-Forwarded-For
     entirely and use the direct connection IP. When > 0, pick the IP at position
     len(ips) - trusted_proxy_count from X-Forwarded-For to prevent spoofing.
+
+    M-2: Read from Settings (pydantic-validated) instead of raw os.getenv.
     """
-    trusted_proxy_count = int(os.getenv("TRUSTED_PROXY_COUNT", "0"))
+    from app.config import settings
+    trusted_proxy_count = settings.TRUSTED_PROXY_COUNT
     if trusted_proxy_count > 0:
         forwarded = request.headers.get("X-Forwarded-For", "")
         if forwarded:

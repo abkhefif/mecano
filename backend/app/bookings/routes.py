@@ -327,7 +327,9 @@ async def create_booking(
         mechanic_stripe_account_id=mechanic.stripe_account_id,
         commission_cents=commission_cents,
         metadata={"buyer_id": str(buyer.id), "mechanic_id": str(mechanic.id)},
-        idempotency_key=f"booking_{buyer.id}_{amount_cents}_{body.availability_id}",
+        # S-01: Include a nonce to prevent key collision if a prior booking for the
+        # same slot was cancelled and re-created at the same price
+        idempotency_key=f"booking_{buyer.id}_{body.availability_id}_{uuid.uuid4().hex[:8]}",
     )
 
     # Create booking -- with compensating Stripe cancellation on DB failure
@@ -525,14 +527,22 @@ async def refuse_booking(
     booking.refund_percentage = 100
     booking.refund_amount = refund_amount
 
-    # PERF-01: Lock availability separately to prevent concurrent is_booked race
+    # R-01: Lock availability and only release if no other active booking references it
     if booking.availability_id:
         avail_result = await db.execute(
             select(Availability).where(Availability.id == booking.availability_id).with_for_update()
         )
         avail = avail_result.scalar_one_or_none()
         if avail:
-            avail.is_booked = False
+            other_active = await db.execute(
+                select(func.count(Booking.id)).where(
+                    Booking.availability_id == booking.availability_id,
+                    Booking.id != booking.id,
+                    Booking.status != BookingStatus.CANCELLED,
+                )
+            )
+            if (other_active.scalar() or 0) == 0:
+                avail.is_booked = False
 
     await db.flush()
 
@@ -655,14 +665,22 @@ async def cancel_booking(
     booking.refund_percentage = refund_pct
     booking.refund_amount = refund_amount
 
-    # PERF-01: Lock availability separately to prevent concurrent is_booked race
+    # R-01: Lock availability and only release if no other active booking references it
     if booking.availability_id:
         avail_result = await db.execute(
             select(Availability).where(Availability.id == booking.availability_id).with_for_update()
         )
         avail = avail_result.scalar_one_or_none()
         if avail:
-            avail.is_booked = False
+            other_active = await db.execute(
+                select(func.count(Booking.id)).where(
+                    Booking.availability_id == booking.availability_id,
+                    Booking.id != booking.id,
+                    Booking.status != BookingStatus.CANCELLED,
+                )
+            )
+            if (other_active.scalar() or 0) == 0:
+                avail.is_booked = False
 
     await db.flush()
 

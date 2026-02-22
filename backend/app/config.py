@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     # FIN-04: Stripe authorizations expire after 7 days; cap booking advance to 6
     STRIPE_AUTH_MAX_ADVANCE_DAYS: int = 6
 
+    # M-2: Proxy trust level for X-Forwarded-For IP extraction (0 = direct connection)
+    TRUSTED_PROXY_COUNT: int = 0
+
     @model_validator(mode="after")
     def normalize_database_url(self) -> "Settings":
         """Convert postgres:// to postgresql+asyncpg:// for Render compatibility."""
@@ -202,6 +205,15 @@ class Settings(BaseSettings):
                     "R2_ENDPOINT_URL is empty — file uploads will use local storage fallback.",
                     stacklevel=2,
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_frontend_url(self) -> "Settings":
+        """M-1: Enforce HTTPS for FRONTEND_URL in production to prevent token leakage."""
+        if self.is_production and not self.FRONTEND_URL.startswith("https://"):
+            raise ValueError(
+                "FRONTEND_URL must use HTTPS in production to protect password reset tokens."
+            )
         return self
 
     @property

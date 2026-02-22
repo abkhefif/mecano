@@ -222,14 +222,23 @@ async def check_pending_acceptances() -> None:
                 booking.cancelled_at = datetime.now(timezone.utc)
                 booking.cancelled_by = "mechanic"
 
-                # PERF-01: Lock availability row separately before modifying is_booked
+                # R-01: Lock availability and only release if no other active booking references it
                 if booking.availability_id:
                     avail_result = await db.execute(
                         select(Availability).where(Availability.id == booking.availability_id).with_for_update()
                     )
                     avail = avail_result.scalar_one_or_none()
                     if avail:
-                        avail.is_booked = False
+                        from sqlalchemy import func as sa_func
+                        other_active = await db.execute(
+                            select(sa_func.count(Booking.id)).where(
+                                Booking.availability_id == booking.availability_id,
+                                Booking.id != booking.id,
+                                Booking.status != BookingStatus.CANCELLED,
+                            )
+                        )
+                        if (other_active.scalar() or 0) == 0:
+                            avail.is_booked = False
 
                 await db.commit()
                 SCHEDULER_JOB_RUNS.labels(job_name="check_pending_acceptances", status="success").inc()

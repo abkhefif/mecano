@@ -245,8 +245,12 @@ async def test_check_pending_acceptances():
     mock_avail_result = MagicMock()
     mock_avail_result.scalar_one_or_none.return_value = mock_avail
 
+    # R-01: Third execute call returns count of other active bookings (0 = safe to release)
+    mock_count_result = MagicMock()
+    mock_count_result.scalar.return_value = 0
+
     mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(side_effect=[mock_result, mock_avail_result])
+    mock_db.execute = AsyncMock(side_effect=[mock_result, mock_avail_result, mock_count_result])
     mock_db.commit = AsyncMock()
 
     mock_session_ctx = AsyncMock()
