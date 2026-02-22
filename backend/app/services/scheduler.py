@@ -87,7 +87,8 @@ async def release_payment(booking_id: str) -> None:
     eliminate the TOCTOU race window between the status check and the lock.
     """
     # Acquire lock FIRST to prevent duplicate capture across workers
-    if not await _acquire_scheduler_lock(f"release_payment_{booking_id}", ttl=600):
+    # R-04: TTL reduced from 600s to 90s — Stripe timeout is 15s, 90s covers retries
+    if not await _acquire_scheduler_lock(f"release_payment_{booking_id}", ttl=90):
         logger.info("release_payment_lock_held", booking_id=booking_id)
         return
 
@@ -845,8 +846,18 @@ def start_scheduler() -> None:
                 error=str(event.exception),
             )
 
-    from apscheduler.events import EVENT_JOB_ERROR
+    from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_MISSED
     scheduler.add_listener(_job_error_listener, EVENT_JOB_ERROR)
+
+    # OBS-2: Log when a job misses its fire window (misfire_grace_time exceeded)
+    def _job_missed_listener(event):
+        logger.warning(
+            "scheduler_job_missed",
+            job_id=event.job_id,
+            scheduled_time=str(event.scheduled_run_time),
+        )
+
+    scheduler.add_listener(_job_missed_listener, EVENT_JOB_MISSED)
 
     scheduler.start()
     logger.info("scheduler_started")

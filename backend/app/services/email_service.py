@@ -85,7 +85,8 @@ async def send_password_reset_email(to_email: str, reset_token: str) -> bool:
         )
         return False
 
-    reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token}"
+    # L-4: Escape link to prevent XSS if token format ever changes
+    reset_link = escape(f"{settings.FRONTEND_URL}/reset-password?token={reset_token}")
 
     payload = {
         "from": "eMecano <noreply@emecano.fr>",
@@ -140,7 +141,8 @@ async def send_verification_email(email: str, token: str) -> bool:
         )
         return False
 
-    verification_link = f"{settings.FRONTEND_URL}/verify?token={token}"
+    # L-4: Escape link to prevent XSS if token format ever changes
+    verification_link = escape(f"{settings.FRONTEND_URL}/verify?token={token}")
 
     payload = {
         "from": "eMecano <noreply@emecano.fr>",

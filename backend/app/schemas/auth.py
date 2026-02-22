@@ -129,7 +129,7 @@ class ForgotPasswordRequest(BaseModel):
 
 
 class ResetPasswordRequest(BaseModel):
-    token: str
+    token: str = Field(max_length=2048)
     new_password: str = Field(min_length=8, max_length=128)
 
     @field_validator("new_password")

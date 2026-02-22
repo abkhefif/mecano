@@ -795,6 +795,9 @@ async def check_in(
         )
         db.add(dispute)
         booking.status = BookingStatus.DISPUTED
+        # OBS-1: Track dispute creation in Prometheus
+        from app.metrics import DISPUTES_OPENED
+        DISPUTES_OPENED.labels(reason="no_show").inc()
         await db.flush()
 
         # Notify mechanic about the no-show report
@@ -1112,6 +1115,9 @@ async def validate_booking(
         )
         db.add(dispute)
         booking.status = BookingStatus.DISPUTED
+        # OBS-1: Track dispute creation in Prometheus
+        from app.metrics import DISPUTES_OPENED
+        DISPUTES_OPENED.labels(reason=body.problem_reason.value).inc()
         await db.flush()
 
         # Notify mechanic about the dispute
@@ -1232,6 +1238,9 @@ async def validate_booking_with_photos(
         )
         db.add(dispute)
         booking.status = BookingStatus.DISPUTED
+        # OBS-1: Track dispute creation in Prometheus
+        from app.metrics import DISPUTES_OPENED
+        DISPUTES_OPENED.labels(reason=reason_enum.value).inc()
         await db.flush()
 
         # Notify mechanic about the dispute

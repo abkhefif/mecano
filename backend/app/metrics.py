@@ -43,6 +43,13 @@ SCHEDULER_JOB_RUNS = Counter(
     ["job_name", "status"],
 )
 
+# Dispute counters
+DISPUTES_OPENED = Counter(
+    "emecano_disputes_opened_total",
+    "Total disputes opened",
+    ["reason"],
+)
+
 # Registration counters
 USERS_REGISTERED = Counter(
     "emecano_users_registered_total",

@@ -81,6 +81,8 @@ async def cancel_payment_intent(payment_intent_id: str, idempotency_key: str | N
         return
 
     try:
+        # OBS-3: Instrument cancel/refund with STRIPE_CALL_DURATION
+        start = _time.monotonic()
         intent = await asyncio.wait_for(
             asyncio.to_thread(stripe.PaymentIntent.retrieve, payment_intent_id, api_key=settings.STRIPE_SECRET_KEY), timeout=15.0
         )
@@ -103,7 +105,9 @@ async def cancel_payment_intent(payment_intent_id: str, idempotency_key: str | N
                 cancel_params["idempotency_key"] = idempotency_key
             await asyncio.wait_for(asyncio.to_thread(stripe.PaymentIntent.cancel, payment_intent_id, **cancel_params), timeout=15.0)
             logger.info("stripe_payment_intent_cancelled", intent_id=payment_intent_id)
-    except stripe.StripeError as e:
+        STRIPE_CALL_DURATION.labels(operation="cancel_payment_intent").observe(_time.monotonic() - start)
+    except (stripe.StripeError, asyncio.TimeoutError) as e:
+        # S-02: Catch asyncio.TimeoutError alongside StripeError
         logger.exception("stripe_cancel_failed", intent_id=payment_intent_id)
         raise StripeServiceError(f"Stripe cancellation failed: {e}") from None
 
@@ -118,74 +122,85 @@ async def refund_payment_intent(
         logger.info("stripe_mock_refund", intent_id=payment_intent_id, amount=amount_cents)
         return {"id": f"re_mock_{payment_intent_id}", "status": "succeeded"}
 
-    # PAY-22: Check PI status — cancel (release hold) if not captured
-    intent = await asyncio.wait_for(
-        asyncio.to_thread(
-            stripe.PaymentIntent.retrieve, payment_intent_id, api_key=settings.STRIPE_SECRET_KEY
-        ),
-        timeout=15.0,
-    )
-    if intent.status != "succeeded":
-        # FIN-03: Handle partial refund on uncaptured PI correctly.
-        # If partial amount requested and PI is capturable, capture only the
-        # non-refunded portion (Stripe releases the remainder automatically).
-        if amount_cents is not None and intent.status == "requires_capture":
-            amount_to_capture = intent.amount - amount_cents
-            if amount_to_capture <= 0:
-                # Refund >= full amount: just cancel to release all funds
-                logger.info("stripe_partial_refund_as_full_cancel", intent_id=payment_intent_id)
-            else:
-                capture_params: dict = {
-                    "amount_to_capture": amount_to_capture,
-                    "api_key": settings.STRIPE_SECRET_KEY,
-                }
-                if idempotency_key:
-                    capture_params["idempotency_key"] = f"partcap_{idempotency_key}"
-                captured = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        stripe.PaymentIntent.capture, payment_intent_id, **capture_params
-                    ),
-                    timeout=15.0,
-                )
-                logger.info(
-                    "stripe_partial_capture_for_refund",
-                    intent_id=payment_intent_id,
-                    captured=amount_to_capture,
-                    released=amount_cents,
-                )
-                return {"id": captured.id, "status": "partially_captured"}
+    try:
+        # OBS-3: Instrument refund with STRIPE_CALL_DURATION
+        start = _time.monotonic()
 
-        # Full refund on uncaptured PI: cancel to release hold
-        logger.info("stripe_refund_as_cancel", intent_id=payment_intent_id, status=intent.status)
-        cancel_params: dict = {"api_key": settings.STRIPE_SECRET_KEY}
-        if idempotency_key:
-            cancel_params["idempotency_key"] = f"cancel_{idempotency_key}"
-        canceled = await asyncio.wait_for(
-            asyncio.to_thread(stripe.PaymentIntent.cancel, payment_intent_id, **cancel_params),
+        # PAY-22: Check PI status — cancel (release hold) if not captured
+        intent = await asyncio.wait_for(
+            asyncio.to_thread(
+                stripe.PaymentIntent.retrieve, payment_intent_id, api_key=settings.STRIPE_SECRET_KEY
+            ),
             timeout=15.0,
         )
-        return {"id": canceled.id, "status": "canceled"}
+        if intent.status != "succeeded":
+            # FIN-03: Handle partial refund on uncaptured PI correctly.
+            # If partial amount requested and PI is capturable, capture only the
+            # non-refunded portion (Stripe releases the remainder automatically).
+            if amount_cents is not None and intent.status == "requires_capture":
+                amount_to_capture = intent.amount - amount_cents
+                if amount_to_capture <= 0:
+                    # Refund >= full amount: just cancel to release all funds
+                    logger.info("stripe_partial_refund_as_full_cancel", intent_id=payment_intent_id)
+                else:
+                    capture_params: dict = {
+                        "amount_to_capture": amount_to_capture,
+                        "api_key": settings.STRIPE_SECRET_KEY,
+                    }
+                    if idempotency_key:
+                        capture_params["idempotency_key"] = f"partcap_{idempotency_key}"
+                    captured = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            stripe.PaymentIntent.capture, payment_intent_id, **capture_params
+                        ),
+                        timeout=15.0,
+                    )
+                    STRIPE_CALL_DURATION.labels(operation="refund_payment_intent").observe(_time.monotonic() - start)
+                    logger.info(
+                        "stripe_partial_capture_for_refund",
+                        intent_id=payment_intent_id,
+                        captured=amount_to_capture,
+                        released=amount_cents,
+                    )
+                    return {"id": captured.id, "status": "partially_captured"}
 
-    # PAY-19: Validate refund amount doesn't exceed what's refundable
-    if amount_cents is not None:
-        max_refundable = intent.amount - (intent.amount_refunded or 0)
-        if amount_cents > max_refundable:
-            raise ValueError(f"Refund amount {amount_cents} exceeds max refundable {max_refundable}")
+            # Full refund on uncaptured PI: cancel to release hold
+            logger.info("stripe_refund_as_cancel", intent_id=payment_intent_id, status=intent.status)
+            cancel_params: dict = {"api_key": settings.STRIPE_SECRET_KEY}
+            if idempotency_key:
+                cancel_params["idempotency_key"] = f"cancel_{idempotency_key}"
+            canceled = await asyncio.wait_for(
+                asyncio.to_thread(stripe.PaymentIntent.cancel, payment_intent_id, **cancel_params),
+                timeout=15.0,
+            )
+            STRIPE_CALL_DURATION.labels(operation="refund_payment_intent").observe(_time.monotonic() - start)
+            return {"id": canceled.id, "status": "canceled"}
 
-    params: dict = {"payment_intent": payment_intent_id, "api_key": settings.STRIPE_SECRET_KEY}
-    if amount_cents is not None:
-        params["amount"] = amount_cents
-    if idempotency_key:
-        params["idempotency_key"] = idempotency_key
+        # PAY-19: Validate refund amount doesn't exceed what's refundable
+        if amount_cents is not None:
+            max_refundable = intent.amount - (intent.amount_refunded or 0)
+            if amount_cents > max_refundable:
+                raise ValueError(f"Refund amount {amount_cents} exceeds max refundable {max_refundable}")
 
-    refund = await asyncio.wait_for(
-        asyncio.to_thread(stripe.Refund.create, **params), timeout=15.0
-    )
-    # PERF-09: Increment Prometheus refund counter
-    from app.metrics import PAYMENTS_REFUNDED
-    PAYMENTS_REFUNDED.inc()
-    logger.info("stripe_refund_created", refund_id=refund.id, intent_id=payment_intent_id)
-    return {"id": refund.id, "status": refund.status}
+        params: dict = {"payment_intent": payment_intent_id, "api_key": settings.STRIPE_SECRET_KEY}
+        if amount_cents is not None:
+            params["amount"] = amount_cents
+        if idempotency_key:
+            params["idempotency_key"] = idempotency_key
+
+        refund = await asyncio.wait_for(
+            asyncio.to_thread(stripe.Refund.create, **params), timeout=15.0
+        )
+        STRIPE_CALL_DURATION.labels(operation="refund_payment_intent").observe(_time.monotonic() - start)
+        # PERF-09: Increment Prometheus refund counter
+        from app.metrics import PAYMENTS_REFUNDED
+        PAYMENTS_REFUNDED.inc()
+        logger.info("stripe_refund_created", refund_id=refund.id, intent_id=payment_intent_id)
+        return {"id": refund.id, "status": refund.status}
+    except (stripe.StripeError, asyncio.TimeoutError) as e:
+        # S-02: Catch asyncio.TimeoutError alongside StripeError
+        logger.exception("stripe_refund_failed", intent_id=payment_intent_id)
+        raise StripeServiceError(f"Stripe refund failed: {e}") from None
 
 
 async def capture_payment_intent(payment_intent_id: str, idempotency_key: str | None = None) -> None:
@@ -230,7 +245,8 @@ async def capture_payment_intent(payment_intent_id: str, idempotency_key: str | 
         )
         STRIPE_CALL_DURATION.labels(operation="capture_payment_intent").observe(_time.monotonic() - start)
         logger.info("stripe_payment_intent_captured", intent_id=payment_intent_id)
-    except stripe.StripeError as e:
+    except (stripe.StripeError, asyncio.TimeoutError) as e:
+        # S-02: Catch asyncio.TimeoutError alongside StripeError
         logger.exception("stripe_capture_failed", intent_id=payment_intent_id)
         raise StripeServiceError(f"Stripe capture failed: {e}") from None
 

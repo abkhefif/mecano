@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
 import jwt
@@ -199,8 +199,10 @@ def _sanitize_csv_cell(value: str | None) -> str | None:
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit(AUTH_RATE_LIMIT)
-async def register(request: Request, body: RegisterRequest, db: AsyncSession = Depends(get_db)):
+async def register(request: Request, response: Response, body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     """Register a new user (buyer or mechanic). Admin registration is not allowed."""
+    # L-2: Prevent caching of token responses by edge proxies/CDNs
+    response.headers["Cache-Control"] = "no-store"
     if body.role.value == "admin":
         raise HTTPException(status_code=403, detail="Admin registration not allowed")
 
@@ -368,8 +370,10 @@ async def resend_verification(request: Request, body: ResendVerificationRequest,
 
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit(AUTH_RATE_LIMIT)
-async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(request: Request, response: Response, body: LoginRequest, db: AsyncSession = Depends(get_db)):
     """Authenticate a user and return a JWT token pair."""
+    # L-2: Prevent caching of token responses by edge proxies/CDNs
+    response.headers["Cache-Control"] = "no-store"
     # SEC-004 / AUD-002: Per-email lockout after N failed attempts (Redis-backed)
     if await _check_login_lockout(body.email):
         raise HTTPException(
@@ -409,13 +413,15 @@ async def login(request: Request, body: LoginRequest, db: AsyncSession = Depends
 
 @router.post("/refresh", response_model=TokenResponse)
 @limiter.limit(AUTH_RATE_LIMIT)
-async def refresh_tokens(request: Request, body: RefreshRequest, db: AsyncSession = Depends(get_db)):
+async def refresh_tokens(request: Request, response: Response, body: RefreshRequest, db: AsyncSession = Depends(get_db)):
     """Exchange a refresh token for a new access + refresh token pair.
 
     SEC-008: The old refresh token is blacklisted (via its ``jti``) during
     rotation (see AUD-014 below). This prevents reuse of the old token after
     a new pair has been issued.
     """
+    # L-2: Prevent caching of token responses by edge proxies/CDNs
+    response.headers["Cache-Control"] = "no-store"
     user_id = decode_refresh_token(body.refresh_token)
     if not user_id:
         raise HTTPException(
