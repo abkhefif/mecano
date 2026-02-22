@@ -129,6 +129,13 @@ async def list_reviews(
     Uses a single JOIN query instead of two separate queries (one to look up
     the mechanic profile, then another to fetch reviews) for better performance.
     """
+    # BUG-014: Always verify mechanic exists before fetching reviews
+    profile_result = await db.execute(
+        select(MechanicProfile.id).where(MechanicProfile.id == mechanic_id)
+    )
+    if not profile_result.scalar_one_or_none():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mechanic not found")
+
     result = await db.execute(
         select(Review)
         .join(MechanicProfile, MechanicProfile.user_id == Review.reviewee_id)
@@ -138,13 +145,5 @@ async def list_reviews(
         .limit(limit)
     )
     reviews = result.scalars().all()
-
-    # If no reviews found, verify the mechanic exists to return a proper 404
-    if not reviews and offset == 0:
-        profile_result = await db.execute(
-            select(MechanicProfile.id).where(MechanicProfile.id == mechanic_id)
-        )
-        if not profile_result.scalar_one_or_none():
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Mechanic not found")
 
     return [ReviewResponse.model_validate(r) for r in reviews]

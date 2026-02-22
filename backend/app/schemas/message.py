@@ -12,7 +12,7 @@ class MessageCreate(BaseModel):
 class MessageResponse(BaseModel):
     id: uuid.UUID
     booking_id: uuid.UUID
-    sender_id: uuid.UUID
+    sender_id: uuid.UUID | None
     is_template: bool
     content: str
     created_at: datetime

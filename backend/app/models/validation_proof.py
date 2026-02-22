@@ -20,7 +20,7 @@ class ValidationProof(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
     booking_id: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("bookings.id", ondelete="CASCADE"), unique=True, nullable=False
+        GUID(), ForeignKey("bookings.id", ondelete="RESTRICT"), unique=True, nullable=False
     )
     photo_plate_url: Mapped[str] = mapped_column(String(500), nullable=False)
     photo_odometer_url: Mapped[str] = mapped_column(String(500), nullable=False)

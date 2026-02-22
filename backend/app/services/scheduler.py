@@ -22,6 +22,7 @@ from app.models.mechanic_profile import MechanicProfile
 from app.models.notification import Notification
 from app.models.user import User
 from app.models.webhook_event import ProcessedWebhookEvent
+from app.metrics import SCHEDULER_JOB_RUNS
 from app.services.notifications import create_notification, send_booking_reminder
 from app.services.penalties import apply_no_show_penalty, reset_no_show_if_eligible
 from app.services.stripe_service import cancel_payment_intent, capture_payment_intent
@@ -98,7 +99,10 @@ async def release_payment(booking_id: str) -> None:
 
         try:
             if booking.stripe_payment_intent_id:
-                await capture_payment_intent(booking.stripe_payment_intent_id)
+                await capture_payment_intent(
+                    booking.stripe_payment_intent_id,
+                    idempotency_key=f"release_{booking_id}",
+                )
         except Exception as e:
             logger.exception("release_payment_stripe_failed", booking_id=booking_id, error_type=type(e).__name__)
             return  # Don't update status if Stripe failed; will be retried by catch-all cron
@@ -107,6 +111,10 @@ async def release_payment(booking_id: str) -> None:
         booking.payment_released_at = datetime.now(timezone.utc)
         await db.commit()
 
+        from app.metrics import BOOKINGS_COMPLETED, PAYMENTS_CAPTURED
+        PAYMENTS_CAPTURED.inc()
+        BOOKINGS_COMPLETED.inc()
+        SCHEDULER_JOB_RUNS.labels(job_name="release_payment", status="success").inc()
         logger.info("payment_released", booking_id=booking_id)
 
 
@@ -130,7 +138,8 @@ async def release_overdue_payments() -> None:
             select(Booking).where(
                 Booking.status == BookingStatus.VALIDATED,
                 Booking.updated_at < cutoff,
-            ).limit(SCHEDULER_BATCH_SIZE)
+            ).with_for_update(skip_locked=True)
+            .limit(SCHEDULER_BATCH_SIZE)
         )
         bookings = result.scalars().all()
 
@@ -141,13 +150,18 @@ async def release_overdue_payments() -> None:
                 # error), the rollback resets the session state so subsequent
                 # bookings can proceed without stale-session issues.
                 if booking.stripe_payment_intent_id:
-                    await capture_payment_intent(booking.stripe_payment_intent_id)
+                    await capture_payment_intent(
+                        booking.stripe_payment_intent_id,
+                        idempotency_key=f"release_overdue_{booking.id}",
+                    )
                 booking.status = BookingStatus.COMPLETED
                 booking.payment_released_at = datetime.now(timezone.utc)
                 await db.commit()
+                SCHEDULER_JOB_RUNS.labels(job_name="release_overdue_payments", status="success").inc()
                 logger.info("overdue_payment_released", booking_id=str(booking.id))
             except Exception as e:
                 await db.rollback()
+                SCHEDULER_JOB_RUNS.labels(job_name="release_overdue_payments", status="error").inc()
                 logger.exception(
                     "overdue_payment_release_failed",
                     booking_id=str(booking.id),
@@ -197,6 +211,7 @@ async def check_pending_acceptances() -> None:
                     booking.availability.is_booked = False
 
                 await db.commit()
+                SCHEDULER_JOB_RUNS.labels(job_name="check_pending_acceptances", status="success").inc()
                 logger.info(
                     "pending_acceptance_expired",
                     booking_id=str(booking.id),
@@ -204,6 +219,7 @@ async def check_pending_acceptances() -> None:
                 )
             except Exception as e:
                 await db.rollback()
+                SCHEDULER_JOB_RUNS.labels(job_name="check_pending_acceptances", status="error").inc()
                 logger.exception(
                     "pending_acceptance_cancel_failed",
                     booking_id=str(booking.id),

@@ -153,7 +153,10 @@ async def test_mark_notification_read_not_found(notif_client, notif_user):
 
 @pytest.mark.asyncio
 async def test_mark_notification_read_not_owner(notif_client, notif_db, sample_notifications):
-    """Can't mark another user's notification as read."""
+    """Can't mark another user's notification as read.
+
+    BUG-007: Returns 404 (not 403) to prevent notification existence disclosure.
+    """
     other_user = User(
         id=uuid.uuid4(), email="other_notif@test.com",
         password_hash=hash_password("password123"),
@@ -169,7 +172,7 @@ async def test_mark_notification_read_not_owner(notif_client, notif_db, sample_n
         f"/notifications/{notif.id}/read",
         headers={"Authorization": f"Bearer {token}"},
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 404
 
 
 # ============ mark_all_read ============

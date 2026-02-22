@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, JSON, Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import CheckConstraint, Index, JSON, Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -19,6 +19,8 @@ class Notification(Base):
             ")",
             name="ck_notification_type",
         ),
+        Index("ix_notification_user_created", "user_id", "created_at"),
+        Index("ix_notification_user_is_read", "user_id", "is_read"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)

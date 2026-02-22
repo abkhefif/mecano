@@ -24,8 +24,10 @@ def upgrade() -> None:
     # buyer_id -> users.id
     try:
         op.drop_constraint("bookings_buyer_id_fkey", "bookings", type_="foreignkey")
-    except Exception:
-        pass  # Constraint name may differ
+    except Exception as e:
+        # Constraint name may differ across environments
+        import logging
+        logging.getLogger("alembic").warning(f"Could not drop bookings_buyer_id_fkey: {e}")
     op.create_foreign_key(
         "bookings_buyer_id_fkey",
         "bookings",
@@ -38,8 +40,9 @@ def upgrade() -> None:
     # mechanic_id -> mechanic_profiles.id
     try:
         op.drop_constraint("bookings_mechanic_id_fkey", "bookings", type_="foreignkey")
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.getLogger("alembic").warning(f"Could not drop bookings_mechanic_id_fkey: {e}")
     op.create_foreign_key(
         "bookings_mechanic_id_fkey",
         "bookings",
@@ -54,8 +57,9 @@ def downgrade() -> None:
     # Revert to CASCADE
     try:
         op.drop_constraint("bookings_buyer_id_fkey", "bookings", type_="foreignkey")
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.getLogger("alembic").warning(f"Could not drop bookings_buyer_id_fkey: {e}")
     op.create_foreign_key(
         "bookings_buyer_id_fkey",
         "bookings",
@@ -67,8 +71,9 @@ def downgrade() -> None:
 
     try:
         op.drop_constraint("bookings_mechanic_id_fkey", "bookings", type_="foreignkey")
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.getLogger("alembic").warning(f"Could not drop bookings_mechanic_id_fkey: {e}")
     op.create_foreign_key(
         "bookings_mechanic_id_fkey",
         "bookings",

@@ -15,8 +15,8 @@ class Message(Base):
     booking_id: Mapped[uuid.UUID] = mapped_column(
         GUID(), ForeignKey("bookings.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    sender_id: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    sender_id: Mapped[uuid.UUID | None] = mapped_column(
+        GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
     # default=True because the messaging system is template-first by design:
     # users primarily pick from pre-written messages; custom messages limited to
@@ -29,4 +29,4 @@ class Message(Base):
     )
 
     booking: Mapped["Booking"] = relationship("Booking", lazy="raise")
-    sender: Mapped["User"] = relationship("User", lazy="raise")
+    sender: Mapped["User | None"] = relationship("User", lazy="raise")

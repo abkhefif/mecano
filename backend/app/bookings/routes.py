@@ -53,7 +53,7 @@ from app.services.stripe_service import (
     refund_payment_intent,
 )
 from app.config import settings
-from app.utils.code_generator import generate_check_in_code
+from app.utils.code_generator import generate_check_in_code, hash_check_in_code, verify_check_in_code
 from app.utils.display_name import get_display_name
 from app.utils.geo import calculate_distance_km
 from app.utils.booking_state import validate_transition
@@ -152,10 +152,17 @@ async def create_booking(
 
     # Check booking is sufficiently in the future BEFORE any availability split
     # so that a rejected booking doesn't leave orphaned split slots.
-    _check_start = (
-        time.fromisoformat(body.slot_start_time) if body.slot_start_time
-        else availability.start_time
-    )
+    # FIX-8: Robust slot_start_time validation with clear error message
+    if body.slot_start_time:
+        try:
+            _check_start = time.fromisoformat(body.slot_start_time)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Invalid slot_start_time format: '{body.slot_start_time}'. Expected HH:MM (e.g. '09:00')",
+            )
+    else:
+        _check_start = availability.start_time
     _check_datetime = datetime.combine(availability.date, _check_start, tzinfo=timezone.utc)
     if _check_datetime - datetime.now(timezone.utc) < timedelta(hours=settings.BOOKING_MINIMUM_ADVANCE_HOURS):
         raise HTTPException(
@@ -166,6 +173,7 @@ async def create_booking(
     # If buyer chose a sub-slot within a larger availability window, split it
     booked_slot = availability  # by default, book the whole slot
     if body.slot_start_time:
+        # FIX-8: already validated above, safe to parse
         chosen_start = time.fromisoformat(body.slot_start_time)
         chosen_end_dt = datetime.combine(availability.date, chosen_start) + timedelta(minutes=SLOT_DURATION_MINUTES)
         chosen_end = chosen_end_dt.time()
@@ -403,6 +411,9 @@ async def create_booking(
             )
         raise
 
+    from app.metrics import BOOKINGS_CREATED
+    BOOKINGS_CREATED.labels(status="pending_acceptance").inc()
+
     logger.info("booking_created", booking_id=str(booking.id))
 
     # Notify mechanic about the new booking request
@@ -492,7 +503,11 @@ async def refuse_booking(
         try:
             await cancel_payment_intent(booking.stripe_payment_intent_id)
         except StripeServiceError as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.error("stripe_refuse_error", error=str(e), booking_id=str(booking.id))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Payment processing failed. Please try again or contact support.",
+            )
 
     booking.status = BookingStatus.CANCELLED
     booking.cancelled_at = datetime.now(timezone.utc)
@@ -582,18 +597,42 @@ async def cancel_booking(
         Decimal("0.01"), rounding=ROUND_HALF_UP
     )
 
+    # Validate refund does not exceed booking price
+    if refund_amount > booking.total_price:
+        logger.error(
+            "refund_exceeds_price",
+            booking_id=str(booking.id),
+            refund_amount=str(refund_amount),
+            total_price=str(booking.total_price),
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Refund amount exceeds booking price",
+        )
+
     # Issue Stripe refund or cancellation
     if booking.stripe_payment_intent_id:
         try:
             if refund_pct == 100:
                 # Full refund — cancel the payment intent (works for uncaptured and captured)
-                await cancel_payment_intent(booking.stripe_payment_intent_id)
+                await cancel_payment_intent(
+                    booking.stripe_payment_intent_id,
+                    idempotency_key=f"cancel_{booking.id}",
+                )
             elif refund_pct > 0:
                 # Partial refund
                 refund_cents = int(refund_amount * 100)
-                await refund_payment_intent(booking.stripe_payment_intent_id, amount_cents=refund_cents)
+                await refund_payment_intent(
+                    booking.stripe_payment_intent_id,
+                    amount_cents=refund_cents,
+                    idempotency_key=f"refund_{booking.id}_{refund_pct}pct",
+                )
         except StripeServiceError as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            logger.error("stripe_cancel_error", error=str(e), booking_id=str(booking.id))
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Payment processing failed. Please try again or contact support.",
+            )
         # refund_pct == 0: no refund, no Stripe action needed
 
     booking.status = BookingStatus.CANCELLED
@@ -624,6 +663,9 @@ async def cancel_booking(
             body="Le rendez-vous a ete annule par l'autre partie.",
             data={"booking_id": str(booking.id), "cancelled_by": cancelled_by},
         )
+
+    from app.metrics import BOOKINGS_CANCELLED
+    BOOKINGS_CANCELLED.labels(cancelled_by=cancelled_by).inc()
 
     logger.info(
         "booking_cancelled",
@@ -677,7 +719,7 @@ async def check_in(
 
     if body.mechanic_present:
         code = generate_check_in_code()
-        booking.check_in_code = code
+        booking.check_in_code = hash_check_in_code(code)
         booking.check_in_code_attempts = 0
         booking.check_in_code_generated_at = datetime.now(timezone.utc)
         booking.status = BookingStatus.AWAITING_MECHANIC_CODE
@@ -779,7 +821,7 @@ async def enter_code(
     if not body.code or len(body.code) != 4 or not body.code.isdigit():
         raise HTTPException(status_code=400, detail="Code must be 4 digits")
 
-    if not hmac.compare_digest(booking.check_in_code, body.code):
+    if not verify_check_in_code(body.code, booking.check_in_code):
         booking.check_in_code_attempts += 1
         await db.flush()
         remaining = MAX_CODE_ATTEMPTS - booking.check_in_code_attempts

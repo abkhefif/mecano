@@ -136,8 +136,9 @@ async def generate_pdf(
     )
 
     # AUD-B10: Timeout on PDF generation to prevent indefinite hangs
+    # Move HTML constructor into thread to avoid blocking event loop
     pdf_bytes = await asyncio.wait_for(
-        asyncio.to_thread(HTML(string=html_content).write_pdf),
+        asyncio.to_thread(lambda: HTML(string=html_content).write_pdf()),
         timeout=30,
     )
 
@@ -159,7 +160,7 @@ async def generate_payment_receipt(booking_data: dict) -> bytes:
 
     # AUD-B10: Timeout on PDF generation to prevent indefinite hangs
     pdf_bytes = await asyncio.wait_for(
-        asyncio.to_thread(HTML(string=html_content).write_pdf),
+        asyncio.to_thread(lambda: HTML(string=html_content).write_pdf()),
         timeout=30,
     )
 

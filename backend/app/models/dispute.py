@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, JSON, String, Text, func
+from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -16,11 +16,12 @@ class DisputeCase(Base):
             "status IN ('open', 'resolved_buyer', 'resolved_mechanic', 'closed')",
             name="ck_dispute_cases_status_valid",
         ),
+        Index("ix_dispute_cases_status", "status"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
     booking_id: Mapped[uuid.UUID] = mapped_column(
-        GUID(), ForeignKey("bookings.id", ondelete="CASCADE"), unique=True, nullable=False
+        GUID(), ForeignKey("bookings.id", ondelete="RESTRICT"), unique=True, nullable=False
     )
     opened_by: Mapped[uuid.UUID | None] = mapped_column(
         GUID(), ForeignKey("users.id", ondelete="SET NULL"), nullable=True

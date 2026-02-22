@@ -31,6 +31,11 @@ jobs:
       - name: Bandit security scan
         run: bandit -r app/ -c pyproject.toml --severity-level medium -q
 
+      - name: Dependency vulnerability scan
+        run: |
+          pip install pip-audit
+          pip-audit --fix --dry-run || echo "::warning::Vulnerabilities found - review required"
+
   test:
     needs: lint
     runs-on: ubuntu-latest
@@ -85,9 +90,20 @@ jobs:
           APP_ENV: development
         run: pytest --cov=app --cov-report=term-missing --tb=short -q
 
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' && github.event_name == 'push'
+
+    steps:
       - name: Deploy to Render
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: curl -s "${{ secrets.RENDER_DEPLOY_HOOK_URL }}"
+        run: |
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
+          if [ "$HTTP_CODE" -ne 200 ] && [ "$HTTP_CODE" -ne 201 ]; then
+            echo "Deploy failed with HTTP $HTTP_CODE"
+            exit 1
+          fi
+          echo "Deploy triggered successfully (HTTP $HTTP_CODE)"
 
   mobile-check:
     runs-on: ubuntu-latest
@@ -109,3 +125,6 @@ jobs:
 
       - name: TypeScript type check
         run: npx tsc --noEmit
+
+      - name: ESLint lint
+        run: npx expo lint

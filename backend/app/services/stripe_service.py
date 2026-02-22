@@ -1,11 +1,13 @@
 import asyncio
 import json  # Used in dev mode for mock webhook payload parsing (verify_webhook_signature)
+import time as _time
 
 import stripe
 import structlog
 from fastapi import HTTPException
 
 from app.config import settings
+from app.metrics import STRIPE_CALL_DURATION
 
 
 class StripeServiceError(Exception):
@@ -57,9 +59,11 @@ async def create_payment_intent(
     if idempotency_key:
         create_kwargs["idempotency_key"] = idempotency_key
 
+    start = _time.monotonic()
     intent = await asyncio.wait_for(
         asyncio.to_thread(stripe.PaymentIntent.create, **create_kwargs), timeout=15.0
     )
+    STRIPE_CALL_DURATION.labels(operation="create_payment_intent").observe(_time.monotonic() - start)
     logger.info("stripe_payment_intent_created", intent_id=intent.id)
     return {"id": intent.id, "client_secret": intent.client_secret}
 
@@ -157,6 +161,7 @@ async def capture_payment_intent(payment_intent_id: str, idempotency_key: str | 
 
     try:
         # Retrieve PI to check status before attempting capture
+        start = _time.monotonic()
         intent = await asyncio.wait_for(
             asyncio.to_thread(
                 stripe.PaymentIntent.retrieve,
@@ -184,6 +189,7 @@ async def capture_payment_intent(payment_intent_id: str, idempotency_key: str | 
         await asyncio.wait_for(
             asyncio.to_thread(stripe.PaymentIntent.capture, payment_intent_id, **capture_params), timeout=15.0
         )
+        STRIPE_CALL_DURATION.labels(operation="capture_payment_intent").observe(_time.monotonic() - start)
         logger.info("stripe_payment_intent_captured", intent_id=payment_intent_id)
     except stripe.StripeError as e:
         logger.exception("stripe_capture_failed", intent_id=payment_intent_id)

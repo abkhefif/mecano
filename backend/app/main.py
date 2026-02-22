@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 
 import sentry_sdk
 import structlog
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
@@ -25,6 +25,9 @@ from app.referrals.routes import router as referrals_router
 from app.reports.routes import router as reports_router
 from app.reviews.routes import router as reviews_router
 from app.utils.rate_limit import limiter
+
+# FIX-1: Prometheus metrics for observability
+from prometheus_fastapi_instrumentator import Instrumentator
 
 # Configure structlog: JSON in production, console in development
 processors = [
@@ -220,6 +223,52 @@ async def request_id_middleware(request: Request, call_next):
     finally:
         structlog.contextvars.clear_contextvars()
 
+
+# FIX-1: Prometheus metrics — instrument the app and expose /metrics
+# Custom instrumentation avoids the default metrics.default() function which
+# crashes on non-numeric Content-Length headers (prometheus-fastapi-instrumentator bug).
+def _safe_metrics(info) -> None:
+    from prometheus_client import Counter, Histogram
+    if not hasattr(_safe_metrics, "_total"):
+        _safe_metrics._total = Counter(
+            "emecano_http_requests_total", "Total HTTP requests",
+            ["method", "status", "handler"],
+        )
+        _safe_metrics._latency = Histogram(
+            "emecano_http_request_duration_seconds", "Request latency",
+            ["method", "handler"],
+            buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30),
+        )
+    _safe_metrics._total.labels(info.method, info.modified_status, info.modified_handler).inc()
+    _safe_metrics._latency.labels(info.method, info.modified_handler).observe(info.modified_duration)
+
+
+Instrumentator(
+    should_group_status_codes=True,
+    should_ignore_untemplated=True,
+    excluded_handlers=["/health", "/metrics"],
+).add(_safe_metrics).instrument(app)
+
+
+@app.get("/metrics", include_in_schema=False)
+async def metrics_endpoint(request: Request):
+    """Prometheus metrics endpoint (protected by API key)."""
+    from fastapi import Header
+    from prometheus_client import generate_latest
+    from starlette.responses import Response as StarletteResponse
+
+    if settings.METRICS_API_KEY:
+        api_key = request.headers.get("x-metrics-key", "")
+        if api_key != settings.METRICS_API_KEY:
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid metrics API key",
+            )
+
+    return StarletteResponse(
+        content=generate_latest(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(mechanics_router, prefix="/mechanics", tags=["mechanics"])

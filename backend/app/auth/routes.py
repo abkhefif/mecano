@@ -215,54 +215,64 @@ async def register(request: Request, body: RegisterRequest, db: AsyncSession = D
     # Use a savepoint (begin_nested) so that user creation and profile creation
     # are atomic. If the profile flush fails mid-registration, the savepoint is
     # rolled back and the orphaned user row is discarded together with it.
-    async with db.begin_nested():
-        user = User(
-            email=body.email,
-            password_hash=await hash_password_async(body.password),
-            role=UserRole(body.role.value),
-            first_name=body.first_name,
-            last_name=body.last_name,
-            phone=body.phone,
-            is_verified=False,
-        )
-        db.add(user)
-        await db.flush()
-
-        if body.role.value == "mechanic":
-            # Validate referral code if provided
-            referred_by_code = None
-            if body.referral_code:
-                ref_result = await db.execute(
-                    select(ReferralCode).where(ReferralCode.code == body.referral_code)
-                )
-                referral = ref_result.scalar_one_or_none()
-                if not referral:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Invalid referral code",
-                    )
-                referred_by_code = body.referral_code
-
-            profile = MechanicProfile(
-                user_id=user.id,
-                city="",
-                city_lat=None,
-                city_lng=None,
-                accepted_vehicle_types=["car"],
-                is_active=False,  # Inactive until profile is completed
-                referred_by=referred_by_code,
+    try:
+        async with db.begin_nested():
+            user = User(
+                email=body.email,
+                password_hash=await hash_password_async(body.password),
+                role=UserRole(body.role.value),
+                first_name=body.first_name,
+                last_name=body.last_name,
+                phone=body.phone,
+                is_verified=False,
             )
-            db.add(profile)
+            db.add(user)
             await db.flush()
 
-            # AUD-H04: Increment uses_count atomically to prevent race conditions
-            if referred_by_code:
-                await db.execute(
-                    update(ReferralCode)
-                    .where(ReferralCode.id == referral.id)
-                    .values(uses_count=ReferralCode.uses_count + 1)
+            if body.role.value == "mechanic":
+                # Validate referral code if provided
+                referred_by_code = None
+                if body.referral_code:
+                    ref_result = await db.execute(
+                        select(ReferralCode).where(ReferralCode.code == body.referral_code)
+                    )
+                    referral = ref_result.scalar_one_or_none()
+                    if not referral:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Invalid referral code",
+                        )
+                    referred_by_code = body.referral_code
+
+                profile = MechanicProfile(
+                    user_id=user.id,
+                    city="",
+                    city_lat=None,
+                    city_lng=None,
+                    accepted_vehicle_types=["car"],
+                    is_active=False,  # Inactive until profile is completed
+                    referred_by=referred_by_code,
                 )
+                db.add(profile)
                 await db.flush()
+
+                # AUD-H04: Increment uses_count atomically to prevent race conditions
+                if referred_by_code:
+                    await db.execute(
+                        update(ReferralCode)
+                        .where(ReferralCode.id == referral.id)
+                        .values(uses_count=ReferralCode.uses_count + 1)
+                    )
+                    await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        # M-010: Race condition — email was taken between our check and insert.
+        # Return anti-enumeration response (same as duplicate email above).
+        logger.info("registration_race_condition")
+        return JSONResponse(
+            status_code=status.HTTP_201_CREATED,
+            content={"message": "Verification email sent. Check your inbox."},
+        )
 
     # Send verification email
     verification_token = create_email_verification_token(user.email)
@@ -330,7 +340,7 @@ async def verify_email(request: Request, body: EmailVerifyRequest, db: AsyncSess
         db.add(BlacklistedToken(jti=verify_jti, expires_at=verify_expires_at))
         await db.flush()
 
-    logger.info("email_verified", user_id=str(user.id), email=email)
+    logger.info("email_verified", user_id=str(user.id))
     return {"status": "verified"}
 
 
@@ -348,7 +358,7 @@ async def resend_verification(request: Request, body: ResendVerificationRequest,
     verification_token = create_email_verification_token(user.email)
     await send_verification_email(user.email, verification_token)
 
-    logger.info("verification_email_resent", user_id=str(user.id), email=body.email)
+    logger.info("verification_email_resent", user_id=str(user.id))
     return {"status": "sent"}
 
 
@@ -924,9 +934,12 @@ async def delete_account(
                         )
             await db.flush()
 
-    # 3. Delete messages
+    # 3. FIX-9: Anonymize sent messages instead of deleting (GDPR Article 17)
+    # Preserves conversation history for the other party while removing PII
     await db.execute(
-        delete(Message).where(Message.sender_id == user.id)
+        update(Message)
+        .where(Message.sender_id == user.id)
+        .values(content="[Message supprime]", sender_id=None)
     )
     await db.flush()
 

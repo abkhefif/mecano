@@ -12,6 +12,9 @@ requirements-dev.txt
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.coverage
+htmlcov/
 .venv/
 venv/
 seed.py
+pyproject.toml

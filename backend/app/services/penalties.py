@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import structlog
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.mechanic_profile import MechanicProfile
@@ -12,8 +13,16 @@ async def apply_no_show_penalty(
     db: AsyncSession, mechanic: MechanicProfile
 ) -> None:
     """Apply progressive penalty to a mechanic for a no-show."""
-    mechanic.no_show_count += 1
-    mechanic.last_no_show_at = datetime.now(timezone.utc)
+    # Atomic SQL-level increment to prevent race conditions
+    await db.execute(
+        update(MechanicProfile)
+        .where(MechanicProfile.id == mechanic.id)
+        .values(
+            no_show_count=MechanicProfile.no_show_count + 1,
+            last_no_show_at=datetime.now(timezone.utc),
+        )
+    )
+    await db.refresh(mechanic)
 
     if mechanic.no_show_count >= 3:
         mechanic.is_active = False

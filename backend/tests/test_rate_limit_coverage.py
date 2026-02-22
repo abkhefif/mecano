@@ -64,16 +64,22 @@ def test_get_real_ip_proxy_single_ip_in_chain():
 
 
 def test_get_storage_uri_with_redis():
-    """Returns Redis URL when configured for production."""
-    with patch("app.config.settings") as mock_s:
+    """Returns Redis URL when configured and reachable."""
+    mock_redis = MagicMock()
+    mock_redis.ping.return_value = True
+    with patch("app.config.settings") as mock_s, \
+         patch("redis.from_url", return_value=mock_redis):
         mock_s.REDIS_URL = "redis://redis.prod.internal:6379/0"
         result = _get_storage_uri()
     assert result == "redis://redis.prod.internal:6379/0"
 
 
 def test_get_storage_uri_with_localhost_redis():
-    """Returns None when Redis URL contains localhost."""
-    with patch("app.config.settings") as mock_s:
+    """H-001: Returns None when Redis is unreachable (no localhost bypass)."""
+    mock_redis = MagicMock()
+    mock_redis.ping.side_effect = Exception("Connection refused")
+    with patch("app.config.settings") as mock_s, \
+         patch("redis.from_url", return_value=mock_redis):
         mock_s.REDIS_URL = "redis://localhost:6379/0"
         result = _get_storage_uri()
     assert result is None

@@ -1,6 +1,7 @@
 import asyncio
 import uuid
 from html import escape
+from typing import Set
 
 import httpx
 import structlog
@@ -11,6 +12,9 @@ from app.config import settings
 from app.database import async_session
 
 logger = structlog.get_logger()
+
+# Keep references to background tasks to prevent GC collection
+_background_tasks: Set[asyncio.Task] = set()
 
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
 
@@ -227,5 +231,7 @@ async def create_notification(
     # by 100-500ms (Expo API round-trip). The flush above persists the notification.
     # send_push will open its own DB session (db=None) for token lookup and
     # DeviceNotRegistered cleanup, so it is safe after the caller's session commits.
-    asyncio.create_task(send_push(str(user_id), title, body, data=push_data))
+    task = asyncio.create_task(send_push(str(user_id), title, body, data=push_data))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     return notification

@@ -15,9 +15,12 @@ ALLOWED_TRANSITIONS: dict[BookingStatus, set[BookingStatus]] = {
     },
     BookingStatus.AWAITING_MECHANIC_CODE: {
         BookingStatus.CHECK_IN_DONE,
+        BookingStatus.CANCELLED,
     },
     BookingStatus.CHECK_IN_DONE: {
         BookingStatus.CHECK_OUT_DONE,
+        BookingStatus.CANCELLED,
+        BookingStatus.DISPUTED,
     },
     BookingStatus.CHECK_OUT_DONE: {
         BookingStatus.VALIDATED,

@@ -72,7 +72,10 @@ async def test_release_payment_success():
     with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
          patch("app.services.scheduler.capture_payment_intent", new_callable=AsyncMock) as mock_capture:
         await release_payment(str(booking_id))
-        mock_capture.assert_called_once_with("pi_mock_5000")
+        mock_capture.assert_called_once()
+        call_args = mock_capture.call_args
+        assert call_args[0][0] == "pi_mock_5000"
+        assert "idempotency_key" in call_args[1]
         assert mock_booking.status == BookingStatus.COMPLETED
         assert mock_booking.payment_released_at is not None
 
@@ -176,7 +179,10 @@ async def test_release_overdue_payments():
          patch("app.services.scheduler.capture_payment_intent", new_callable=AsyncMock) as mock_capture, \
          patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         await release_overdue_payments()
-        mock_capture.assert_called_once_with("pi_mock_overdue")
+        mock_capture.assert_called_once()
+        call_args = mock_capture.call_args
+        assert call_args[0][0] == "pi_mock_overdue"
+        assert "idempotency_key" in call_args[1]
         assert mock_booking.status == BookingStatus.COMPLETED
 
 

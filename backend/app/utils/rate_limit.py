@@ -23,13 +23,19 @@ def get_real_ip(request: Request) -> str:
 
 
 def _get_storage_uri():
-    """AUD-C02: Use Redis for rate limiting when REDIS_URL is configured in production.
+    """AUD-C02: Use Redis for rate limiting when REDIS_URL is configured.
 
+    H-001: Always attempt to use Redis regardless of hostname (no localhost bypass).
+    Falls back to in-memory storage if Redis is unreachable in non-production.
     Uses lazy import to avoid circular imports with app.config.settings.
     """
     try:
         from app.config import settings
-        if settings.REDIS_URL and "localhost" not in settings.REDIS_URL:
+        if settings.REDIS_URL:
+            # Verify Redis is reachable before returning URI
+            import redis
+            r = redis.from_url(settings.REDIS_URL, socket_connect_timeout=1)
+            r.ping()
             return settings.REDIS_URL
     except Exception:
         pass

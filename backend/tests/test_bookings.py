@@ -13,6 +13,7 @@ from app.models.booking import Booking
 from app.models.enums import BookingStatus, UserRole, VehicleType
 from app.models.mechanic_profile import MechanicProfile
 from app.models.user import User
+from app.utils.code_generator import hash_check_in_code
 from tests.conftest import auth_header, buyer_token, mechanic_token
 
 
@@ -344,7 +345,7 @@ async def test_enter_code_correct(
         buyer_id=buyer_user.id,
         mechanic_id=mechanic_profile.id,
         status=BookingStatus.AWAITING_MECHANIC_CODE,
-        check_in_code="1234",
+        check_in_code=hash_check_in_code("1234"),
         vehicle_type=VehicleType.CAR,
         vehicle_brand="Test",
         vehicle_model="Car",
@@ -386,7 +387,7 @@ async def test_enter_code_incorrect(
         buyer_id=buyer_user.id,
         mechanic_id=mechanic_profile.id,
         status=BookingStatus.AWAITING_MECHANIC_CODE,
-        check_in_code="1234",
+        check_in_code=hash_check_in_code("1234"),
         vehicle_type=VehicleType.CAR,
         vehicle_brand="Test",
         vehicle_model="Car",
@@ -1134,7 +1135,7 @@ async def test_enter_code_not_your_booking(
         buyer_id=buyer_user.id,
         mechanic_id=other_profile.id,
         status=BookingStatus.AWAITING_MECHANIC_CODE,
-        check_in_code="1234",
+        check_in_code=hash_check_in_code("1234"),
         vehicle_type=VehicleType.CAR,
         vehicle_brand="Test",
         vehicle_model="Car",
@@ -1776,7 +1777,8 @@ async def test_cancel_booking_full_refund_more_than_24h(
             f"/bookings/{booking.id}/cancel",
             headers=auth_header(token),
         )
-        mock_cancel.assert_called_once_with("pi_full_refund_test")
+        mock_cancel.assert_called_once()
+        assert mock_cancel.call_args[0][0] == "pi_full_refund_test"
 
     assert response.status_code == 200
     data = response.json()
@@ -1842,7 +1844,9 @@ async def test_cancel_booking_partial_refund_12_to_24h(
             headers=auth_header(token),
         )
         # 50% of 50.00 = 25.00 -> 2500 cents
-        mock_refund.assert_called_once_with("pi_partial_refund_test", amount_cents=2500)
+        mock_refund.assert_called_once()
+        assert mock_refund.call_args[0][0] == "pi_partial_refund_test"
+        assert mock_refund.call_args[1]["amount_cents"] == 2500
 
     assert response.status_code == 200
     data = response.json()
@@ -1962,7 +1966,8 @@ async def test_cancel_booking_no_availability_defaults_full_refund(
             headers=auth_header(token),
         )
         # Full refund when no availability to calculate time from
-        mock_cancel.assert_called_once_with("pi_no_avail_test")
+        mock_cancel.assert_called_once()
+        assert mock_cancel.call_args[0][0] == "pi_no_avail_test"
 
     assert response.status_code == 200
     data = response.json()
@@ -2027,7 +2032,8 @@ async def test_cancel_booking_mechanic_always_full_refund(
             f"/bookings/{booking.id}/cancel",
             headers=auth_header(token),
         )
-        mock_cancel.assert_called_once_with("pi_mech_cancel_test")
+        mock_cancel.assert_called_once()
+        assert mock_cancel.call_args[0][0] == "pi_mech_cancel_test"
 
     assert response.status_code == 200
     data = response.json()

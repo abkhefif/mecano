@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # Sentry
     SENTRY_DSN: str = ""
 
+    # Metrics
+    METRICS_API_KEY: str = ""
+
     # App
     APP_ENV: str = "development"
 
@@ -97,6 +100,29 @@ class Settings(BaseSettings):
             self.DATABASE_URL = url.replace("postgres://", "postgresql+asyncpg://", 1)
         elif url.startswith("postgresql://"):
             self.DATABASE_URL = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return self
+
+    @field_validator("STRIPE_WEBHOOK_SECRET")
+    @classmethod
+    def validate_webhook_secret(cls, v: str) -> str:
+        """Enforce webhook secret when Stripe is configured."""
+        return v
+
+    @model_validator(mode="after")
+    def validate_stripe_webhook_pairing(self) -> "Settings":
+        """Warn if Stripe key is set but webhook secret is missing."""
+        if self.STRIPE_SECRET_KEY and not self.STRIPE_WEBHOOK_SECRET:
+            if self.is_production:
+                raise ValueError(
+                    "STRIPE_WEBHOOK_SECRET is required when STRIPE_SECRET_KEY is set"
+                )
+            else:
+                import warnings
+                warnings.warn(
+                    "STRIPE_SECRET_KEY is set but STRIPE_WEBHOOK_SECRET is empty — "
+                    "webhook signature verification will be insecure.",
+                    stacklevel=2,
+                )
         return self
 
     @model_validator(mode="after")

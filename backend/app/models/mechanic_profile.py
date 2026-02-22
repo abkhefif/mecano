@@ -43,7 +43,7 @@ class MechanicProfile(Base):
     is_identity_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     has_cv: Mapped[bool] = mapped_column(Boolean, default=False)
     has_obd_diagnostic: Mapped[bool] = mapped_column(Boolean, default=False)
-    stripe_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stripe_account_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     no_show_count: Mapped[int] = mapped_column(Integer, default=0)
     last_no_show_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     suspended_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

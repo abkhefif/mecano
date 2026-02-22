@@ -93,6 +93,13 @@ async def send_message(
     """Send a message in a booking conversation."""
     booking = await _get_booking_for_messaging(db, booking_id, user)
 
+    # H-003: Admins can read but not send messages
+    if user.role == UserRole.ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admins cannot send messages. Use the admin panel for moderation.",
+        )
+
     # Validate booking status allows messaging
     if booking.status not in MESSAGING_STATUSES:
         raise HTTPException(
@@ -198,6 +205,10 @@ async def _get_booking_for_messaging(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Booking not found"
         )
+
+    # BUG-015: Allow admins to read messages for dispute resolution (read-only)
+    if user.role == UserRole.ADMIN:
+        return booking
 
     # Check user is buyer or mechanic for this booking
     is_buyer = booking.buyer_id == user.id

@@ -47,5 +47,8 @@ structlog==24.4.0
 # Error tracking
 sentry-sdk[fastapi]==2.52.0
 
+# Metrics
+prometheus-fastapi-instrumentator==7.0.0
+
 # HTTP client
 httpx==0.28.1

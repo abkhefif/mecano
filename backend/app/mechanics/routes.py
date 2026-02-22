@@ -256,6 +256,14 @@ async def update_mechanic_profile(
         if field in UPDATABLE_FIELDS:
             setattr(profile, field, value)
 
+    # BUG-012: Validate free_zone_km <= max_radius_km using current DB values
+    # The schema validator only checks when BOTH fields are in the same request.
+    if profile.free_zone_km > profile.max_radius_km:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="free_zone_km must be less than or equal to max_radius_km",
+        )
+
     await db.flush()
     logger.info("mechanic_profile_updated", mechanic_id=str(profile.id))
 
@@ -569,14 +577,21 @@ async def get_mechanic(
         for r in review_result.scalars().all()
     ]
 
-    # Diplomas
+    # BUG-008: Diplomas — exclude document_url from public response
     diploma_result = await db.execute(
         select(Diploma)
         .where(Diploma.mechanic_id == mechanic_id)
         .order_by(Diploma.created_at.desc())
     )
     diplomas = [
-        DiplomaResponse.model_validate(d) for d in diploma_result.scalars().all()
+        DiplomaResponse(
+            id=d.id,
+            name=d.name,
+            year=d.year,
+            document_url=None,
+            created_at=d.created_at,
+        )
+        for d in diploma_result.scalars().all()
     ]
 
     # Availabilities for next 7 days (exclude past slots)

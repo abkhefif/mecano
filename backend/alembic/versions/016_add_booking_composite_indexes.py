@@ -23,8 +23,9 @@ def upgrade() -> None:
             "bookings",
             ["buyer_id", "created_at"],
         )
-    except Exception:
-        pass  # Index may already exist from model __table_args__
+    except Exception as e:
+        import logging
+        logging.getLogger("alembic").info(f"Index ix_booking_buyer_created may already exist: {e}")
 
     # Composite index for mechanic listing queries (ordered by created_at)
     try:
@@ -33,8 +34,9 @@ def upgrade() -> None:
             "bookings",
             ["mechanic_id", "created_at"],
         )
-    except Exception:
-        pass  # Index may already exist from model __table_args__
+    except Exception as e:
+        import logging
+        logging.getLogger("alembic").info(f"Index ix_booking_mechanic_created may already exist: {e}")
 
 
 def downgrade() -> None:

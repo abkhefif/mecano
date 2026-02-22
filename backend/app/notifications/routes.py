@@ -58,20 +58,18 @@ async def mark_notification_read(
     db: AsyncSession = Depends(get_db),
 ):
     """Mark a single notification as read."""
+    # BUG-007: Filter by both id AND user_id to prevent existence disclosure
     result = await db.execute(
-        select(Notification).where(Notification.id == notification_id)
+        select(Notification).where(
+            Notification.id == notification_id,
+            Notification.user_id == user.id,
+        )
     )
     notification = result.scalar_one_or_none()
     if not notification:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Notification not found",
-        )
-
-    if notification.user_id != user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Not your notification",
         )
 
     notification.is_read = True

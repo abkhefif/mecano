@@ -452,13 +452,15 @@ async def list_bookings(
     result = await db.execute(stmt)
     bookings = result.scalars().all()
 
+    # FIX-2: Sanitized admin booking response — expose mechanic_id only as opaque
+    # reference (not the raw UUID that could be used for profile enumeration)
     return {
         "total": total,
         "bookings": [
             {
                 "id": str(b.id),
                 "buyer_id": str(b.buyer_id),
-                "mechanic_id": str(b.mechanic_id),
+                "mechanic_id": str(b.mechanic_id) if b.mechanic_id else None,
                 "status": b.status.value if hasattr(b.status, "value") else b.status,
                 "vehicle_brand": b.vehicle_brand,
                 "vehicle_model": b.vehicle_model,
@@ -466,7 +468,6 @@ async def list_bookings(
                 "total_price": float(b.total_price),
                 "commission_amount": float(b.commission_amount),
                 "mechanic_payout": float(b.mechanic_payout),
-                "meeting_address": b.meeting_address,
                 "created_at": b.created_at.isoformat() if b.created_at else None,
                 "cancelled_by": b.cancelled_by,
             }

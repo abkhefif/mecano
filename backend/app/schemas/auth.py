@@ -25,7 +25,7 @@ class RegisterRequest(BaseModel):
     first_name: str | None = Field(None, max_length=100)
     last_name: str | None = Field(None, max_length=100)
     phone: str | None = Field(None, pattern=r"^\+?[0-9]{10,15}$")
-    referral_code: str | None = Field(None, max_length=30)
+    referral_code: str | None = Field(None, max_length=20)
     cgu_accepted: bool = Field(False, validate_default=True)
 
     @field_validator("password")

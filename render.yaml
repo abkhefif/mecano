@@ -39,24 +39,29 @@ services:
         value: https://emecano.fr
       - key: CORS_ORIGINS
         value: "https://emecano.fr,https://api.emecano.fr"
+      # --- Manual config: set in Render dashboard ---
+      # Stripe: payment processing (required for production)
       - key: STRIPE_SECRET_KEY
-        sync: false
+        sync: false  # sk_live_... from Stripe dashboard
       - key: STRIPE_WEBHOOK_SECRET
-        sync: false
+        sync: false  # whsec_... from Stripe webhook endpoint settings
+      # Email: transactional emails via Resend
       - key: RESEND_API_KEY
-        sync: false
+        sync: false  # re_... from Resend dashboard
+      # Error tracking
       - key: SENTRY_DSN
-        sync: false
+        sync: false  # https://...@sentry.io/... from Sentry project settings
+      # R2: file storage (identity docs, inspection photos, reports)
       - key: R2_ENDPOINT_URL
-        sync: false
+        sync: false  # https://<account_id>.r2.cloudflarestorage.com
       - key: R2_ACCESS_KEY_ID
-        sync: false
+        sync: false  # R2 API token access key
       - key: R2_SECRET_ACCESS_KEY
-        sync: false
+        sync: false  # R2 API token secret key
       - key: R2_PUBLIC_URL
-        sync: false
+        sync: false  # https://cdn.emecano.fr or R2 public bucket URL
       - key: R2_BUCKET_NAME
-        sync: false
+        sync: false  # e.g. emecano-uploads
       - key: TRUSTED_PROXY_COUNT
         value: "1"
       - key: DB_POOL_SIZE

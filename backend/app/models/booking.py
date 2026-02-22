@@ -20,6 +20,17 @@ class Booking(Base):
             "cancelled_by IN ('buyer', 'mechanic') OR cancelled_by IS NULL",
             name="ck_booking_cancelled_by",
         ),
+        CheckConstraint("commission_amount >= 0", name="ck_booking_commission_amount_positive"),
+        CheckConstraint("mechanic_payout >= 0", name="ck_booking_mechanic_payout_positive"),
+        CheckConstraint("travel_fees >= 0", name="ck_booking_travel_fees_positive"),
+        CheckConstraint(
+            "refund_amount >= 0 OR refund_amount IS NULL",
+            name="ck_booking_refund_amount_positive",
+        ),
+        CheckConstraint(
+            "(refund_percentage >= 0 AND refund_percentage <= 100) OR refund_percentage IS NULL",
+            name="ck_booking_refund_percentage_range",
+        ),
         Index("ix_booking_buyer_created", "buyer_id", "created_at"),
         Index("ix_booking_mechanic_created", "mechanic_id", "created_at"),
         # PERF-005: Composite index for scheduler queries filtering on (status, updated_at)

@@ -85,9 +85,9 @@ async def get_current_user(
     if user.password_changed_at:
         token_iat = payload.get("iat")
         if token_iat:
-            # Add 2-second tolerance for clock skew between token issuance and DB write
+            # Add 500ms tolerance for clock skew between token issuance and DB write
             issued_at = datetime.fromtimestamp(token_iat, tz=timezone.utc)
-            if issued_at < user.password_changed_at - timedelta(seconds=2):
+            if issued_at < user.password_changed_at - timedelta(milliseconds=500):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Token invalidated by password change",

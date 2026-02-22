@@ -28,8 +28,9 @@ def upgrade() -> None:
             "bookings",
             "cancelled_by IN ('buyer', 'mechanic') OR cancelled_by IS NULL",
         )
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.getLogger("alembic").info(f"Constraint ck_booking_cancelled_by may already exist: {e}")
 
     # R-004: Restrict notification type to valid enum values
     try:
@@ -42,8 +43,9 @@ def upgrade() -> None:
             "'new_message', 'reminder', 'no_show', 'profile_verification'"
             ")",
         )
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.getLogger("alembic").info(f"Constraint ck_notification_type may already exist: {e}")
 
 
 def downgrade() -> None:

@@ -13,6 +13,7 @@ from starlette.requests import Request
 # only consumer simplifies maintenance.
 import jwt
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -177,7 +178,10 @@ async def get_receipt_download_token(
             detail="You are not authorized to access this receipt",
         )
 
-    token = _create_download_token(str(booking_id), str(user.id))
+    # BUG-010: For admin tokens, encode the buyer_id so download_receipt_with_token
+    # can verify against booking.buyer_id (admin's own user_id would fail that check).
+    token_user_id = str(booking.buyer_id) if user.role == UserRole.ADMIN else str(user.id)
+    token = _create_download_token(str(booking_id), token_user_id)
     logger.info("receipt_download_token_generated", booking_id=str(booking.id), user_id=str(user.id))
     return {"download_token": token, "expires_in_seconds": 300}
 
@@ -235,6 +239,7 @@ async def download_receipt_with_token(
     pdf_bytes = await generate_payment_receipt(booking_data)
 
     # SEC-009: Blacklist the token JTI to enforce single-use
+    # BUG-013: Catch IntegrityError for concurrent requests with the same token
     if jti:
         exp = token_payload.get("exp")
         expires_at = (
@@ -242,8 +247,15 @@ async def download_receipt_with_token(
             if exp
             else datetime.now(timezone.utc)
         )
-        db.add(BlacklistedToken(jti=jti, expires_at=expires_at))
-        await db.flush()
+        try:
+            db.add(BlacklistedToken(jti=jti, expires_at=expires_at))
+            await db.flush()
+        except IntegrityError:
+            await db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Download token has already been used",
+            )
 
     logger.info("receipt_downloaded_via_token", booking_id=str(booking.id), user_id=user_id)
 

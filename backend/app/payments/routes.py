@@ -115,6 +115,13 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
         logger.info("stripe_webhook_duplicate_skipped", event_id=event_id)
         return {"status": "already_processed"}
 
+    # BUG-005: Insert idempotency record BEFORE processing to close the race window.
+    # If processing fails, the record stays and the event won't be retried — but Stripe
+    # will re-deliver it, and since it's already marked, it will be skipped as duplicate.
+    # This is safer than double-processing side effects (duplicate refunds, etc.).
+    db.add(ProcessedWebhookEvent(event_id=event_id))
+    await db.flush()
+
     logger.info("stripe_webhook_received", event_type=event_type, event_id=event_id)
 
     if event_type == "payment_intent.succeeded":
@@ -289,10 +296,6 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         booking_id=str(dispute_booking.id),
                     )
 
-    # Record event as processed for idempotency
-    db.add(ProcessedWebhookEvent(event_id=event_id))
-    await db.flush()
-
     return {"status": "ok"}
 
 
@@ -350,7 +353,11 @@ async def resolve_dispute(
             booking.status = new_status
             booking.payment_released_at = datetime.now(timezone.utc)
     except StripeServiceError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error("stripe_dispute_resolve_error", error=str(e), dispute_id=str(body.dispute_id))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Payment processing failed. Please try again or contact support.",
+        )
 
     dispute.resolved_at = datetime.now(timezone.utc)
     dispute.resolved_by_admin = admin.id
