@@ -319,8 +319,9 @@ async def create_booking(
         )
 
     # Create Stripe PaymentIntent
-    amount_cents = int(round(pricing["total_price"] * 100))
-    commission_cents = int(round(pricing["commission_amount"] * 100))
+    # PAY-H3: Use ROUND_HALF_UP consistently (not round() which uses ROUND_HALF_EVEN)
+    amount_cents = int((pricing["total_price"] * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+    commission_cents = int((pricing["commission_amount"] * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
     intent = await create_payment_intent(
         amount_cents=amount_cents,
@@ -645,7 +646,7 @@ async def cancel_booking(
                 )
             elif refund_pct > 0:
                 # Partial refund
-                refund_cents = int(refund_amount * 100)
+                refund_cents = int((refund_amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
                 await refund_payment_intent(
                     booking.stripe_payment_intent_id,
                     amount_cents=refund_cents,

@@ -365,7 +365,7 @@ async def send_reminders() -> None:
     """Send 24h and 2h reminders for confirmed bookings."""
     if not await _acquire_scheduler_lock("send_reminders"):
         return
-    SCHEDULER_JOB_RUNS.labels(job_name="send_reminders", status="success").inc()
+    # OBS-GAP-5: Moved counter AFTER work completes (was incrementing before work)
     async with async_session() as db:
         now = datetime.now(timezone.utc)
 
@@ -394,6 +394,9 @@ async def send_reminders() -> None:
         except Exception:
             await db.rollback()
             logger.exception("send_reminders_2h_failed")
+
+    # OBS-GAP-5: Counter fires AFTER both reminder windows complete
+    SCHEDULER_JOB_RUNS.labels(job_name="send_reminders", status="success").inc()
 
 
 def schedule_payment_release(booking_id: str) -> None:
@@ -810,13 +813,20 @@ async def anonymize_old_bookings() -> None:
         return
     async with async_session() as db:
         cutoff = datetime.now(timezone.utc) - timedelta(days=3 * 365)
-        result = await db.execute(
-            update(Booking)
+        # PERF-BATCH: Limit batch size to avoid long-running transactions
+        subq = (
+            select(Booking.id)
             .where(
                 Booking.status.in_([BookingStatus.COMPLETED, BookingStatus.CANCELLED]),
                 Booking.created_at < cutoff,
-                Booking.vehicle_brand != "[anonymized]",  # Skip already anonymized
+                Booking.vehicle_brand != "[anonymized]",
             )
+            .limit(500)
+            .scalar_subquery()
+        )
+        result = await db.execute(
+            update(Booking)
+            .where(Booking.id.in_(subq))
             .values(
                 vehicle_brand="[anonymized]",
                 vehicle_model="[anonymized]",

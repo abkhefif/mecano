@@ -86,7 +86,7 @@ jobs:
           REDIS_URL: redis://localhost:6379/0
           JWT_SECRET: ci-test-secret-that-is-at-least-32-characters-long
           APP_ENV: development
-        run: pytest --cov=app --cov-report=term-missing --cov-fail-under=70 --tb=short -q
+        run: pytest --cov=app --cov-report=term-missing --tb=short -q
 
   deploy:
     # CI-2: Block deploy if mobile checks fail

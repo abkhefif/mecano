@@ -42,7 +42,8 @@ else:
 
 structlog.configure(
     processors=processors,
-    wrapper_class=structlog.make_filtering_bound_logger(0),
+    # OBS-LOG: INFO (20) in production, DEBUG (0) in dev
+    wrapper_class=structlog.make_filtering_bound_logger(20 if settings.is_production else 0),
 )
 
 logger = structlog.get_logger()

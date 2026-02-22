@@ -19,5 +19,5 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         # Only add HSTS in production (requires HTTPS)
         if self.is_production:
-            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
         return response

@@ -4,6 +4,7 @@ import stripe
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -120,8 +121,14 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     # If processing fails, the record stays and the event won't be retried — but Stripe
     # will re-deliver it, and since it's already marked, it will be skipped as duplicate.
     # This is safer than double-processing side effects (duplicate refunds, etc.).
-    db.add(ProcessedWebhookEvent(event_id=event_id))
-    await db.flush()
+    try:
+        db.add(ProcessedWebhookEvent(event_id=event_id))
+        await db.flush()
+    except IntegrityError:
+        # PAY-DEDUP: Concurrent request already inserted this event_id
+        await db.rollback()
+        logger.info("stripe_webhook_duplicate_race", event_id=event_id)
+        return {"status": "already_processed"}
 
     logger.info("stripe_webhook_received", event_type=event_type, event_id=event_id)
 
@@ -296,6 +303,37 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         "dispute_case_already_exists",
                         booking_id=str(dispute_booking.id),
                     )
+
+    elif event_type in ("charge.dispute.closed", "charge.dispute.funds_withdrawn", "charge.dispute.funds_reinstated"):
+        # PAY-DISP: Handle dispute lifecycle events
+        dispute_obj = event["data"]["object"]
+        stripe_dispute_id = dispute_obj.get("id")
+        dispute_status = dispute_obj.get("status")
+        dispute_pi = dispute_obj.get("payment_intent")
+        logger.info(
+            "stripe_dispute_lifecycle",
+            event_type=event_type,
+            dispute_id=str(stripe_dispute_id),
+            dispute_status=dispute_status,
+        )
+        if dispute_pi:
+            result = await db.execute(
+                select(Booking).where(Booking.stripe_payment_intent_id == dispute_pi)
+            )
+            booking = result.scalar_one_or_none()
+            if booking:
+                existing_dispute = await db.execute(
+                    select(DisputeCase).where(DisputeCase.booking_id == booking.id)
+                )
+                dispute_case = existing_dispute.scalar_one_or_none()
+                if dispute_case and dispute_case.status != DisputeStatus.RESOLVED:
+                    if dispute_status == "won":
+                        dispute_case.status = DisputeStatus.RESOLVED
+                        dispute_case.resolution = "Dispute won — funds returned to platform"
+                    elif dispute_status == "lost":
+                        dispute_case.status = DisputeStatus.RESOLVED
+                        dispute_case.resolution = "Dispute lost — funds withdrawn by cardholder"
+                    await db.flush()
 
     return {"status": "ok"}
 

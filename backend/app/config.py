@@ -185,6 +185,11 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "SENTRY_DSN must be set in production for error monitoring."
                 )
+            # OBS-PROD-1: Require METRICS_API_KEY in production to protect /metrics endpoint
+            if not self.METRICS_API_KEY:
+                raise ValueError(
+                    "METRICS_API_KEY must be set in production to protect the /metrics endpoint."
+                )
         else:
             if self.DATABASE_URL == _DEFAULT_DATABASE_URL:
                 warnings.warn(

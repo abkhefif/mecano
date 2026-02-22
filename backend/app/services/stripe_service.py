@@ -7,6 +7,11 @@ import structlog
 from fastapi import HTTPException
 
 from app.config import settings
+
+# PAY-H2: Pin Stripe API version to prevent silent breaking changes from dashboard updates
+stripe.api_version = "2024-06-20"
+# PAY-H3: Enable automatic retries for transient network failures
+stripe.max_network_retries = 2
 from app.metrics import STRIPE_CALL_DURATION
 
 
@@ -32,8 +37,9 @@ async def create_payment_intent(
     Returns dict with 'id' and 'client_secret'.
     """
     # FIN-02: Validate inputs before calling Stripe API
-    if amount_cents <= 0:
-        raise ValueError("amount_cents must be positive")
+    # PAY-CRIT-1: Stripe minimum charge is 50 cents (EUR)
+    if amount_cents < 50:
+        raise ValueError("amount_cents must be at least 50 (Stripe minimum for EUR)")
     if commission_cents < 0 or commission_cents > amount_cents:
         raise ValueError(f"commission_cents ({commission_cents}) must be >= 0 and <= amount_cents ({amount_cents})")
 
