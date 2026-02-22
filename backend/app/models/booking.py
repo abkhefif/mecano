@@ -66,7 +66,7 @@ class Booking(Base):
     commission_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     mechanic_payout: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     stripe_payment_intent_id: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True, index=True)
-    check_in_code: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    check_in_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
     check_in_code_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     check_in_code_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     check_in_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
