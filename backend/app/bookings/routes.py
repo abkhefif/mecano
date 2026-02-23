@@ -49,6 +49,7 @@ from app.services.storage import upload_file
 from app.services.stripe_service import (
     StripeServiceError,
     cancel_payment_intent,
+    capture_payment_intent,
     create_payment_intent,
     refund_payment_intent,
 )
@@ -439,9 +440,16 @@ async def create_booking(
 
     # F-009: Use BookingBuyerResponse to hide commission_amount/mechanic_payout
     # from the buyer who creates the booking.
-    return BookingCreateResponse(
+    # L-003: Set Cache-Control: no-store to prevent caching of client_secret
+    from fastapi.responses import JSONResponse as _JSONResponse
+    response_data = BookingCreateResponse(
         booking=BookingBuyerResponse.model_validate(booking),
         client_secret=intent["client_secret"],
+    )
+    return _JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content=response_data.model_dump(mode="json"),
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -652,13 +660,15 @@ async def cancel_booking(
                     amount_cents=refund_cents,
                     idempotency_key=f"refund_{booking.id}_{refund_pct}pct",
                 )
+            elif refund_pct == 0:
+                # H-004: 0% refund = late cancellation — capture payment for the mechanic
+                await capture_payment_intent(booking.stripe_payment_intent_id)
         except StripeServiceError as e:
             logger.error("stripe_cancel_error", error=str(e), booking_id=str(booking.id))
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Payment processing failed. Please try again or contact support.",
             )
-        # refund_pct == 0: no refund, no Stripe action needed
 
     booking.status = BookingStatus.CANCELLED
     booking.cancelled_at = datetime.now(timezone.utc)
@@ -947,6 +957,15 @@ async def check_out(
     except ValidationError as e:
         logger.error("checklist_validation_error", booking_id=str(booking.id), error=str(e))
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid data")
+
+    # M-002: Restrict checkout uploads to images only (no PDF)
+    _IMAGE_TYPES = {"image/jpeg", "image/png"}
+    for photo in [photo_plate, photo_odometer] + additional_photos:
+        if photo.content_type not in _IMAGE_TYPES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Only JPEG and PNG images are accepted for inspection photos, got {photo.content_type}",
+            )
 
     # Validate additional photos count (max 10)
     if len(additional_photos) > 10:

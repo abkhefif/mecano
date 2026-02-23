@@ -304,6 +304,33 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                         booking_id=str(dispute_booking.id),
                     )
 
+    elif event_type == "charge.refund.updated":
+        refund = event["data"]["object"]
+        intent_id = refund.get("payment_intent")
+        refund_status = refund.get("status")
+        if intent_id:
+            result = await db.execute(
+                select(Booking).where(Booking.stripe_payment_intent_id == intent_id)
+            )
+            booking = result.scalar_one_or_none()
+            if booking:
+                logger.info("refund_updated", booking_id=str(booking.id), refund_status=refund_status)
+
+    elif event_type == "charge.refund.failed":
+        refund = event["data"]["object"]
+        intent_id = refund.get("payment_intent")
+        if intent_id:
+            result = await db.execute(
+                select(Booking).where(Booking.stripe_payment_intent_id == intent_id)
+            )
+            booking = result.scalar_one_or_none()
+            if booking:
+                logger.error(
+                    "refund_failed",
+                    booking_id=str(booking.id),
+                    failure_reason=refund.get("failure_reason"),
+                )
+
     elif event_type in ("charge.dispute.closed", "charge.dispute.funds_withdrawn", "charge.dispute.funds_reinstated"):
         # PAY-DISP: Handle dispute lifecycle events
         dispute_obj = event["data"]["object"]
@@ -326,13 +353,13 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
                     select(DisputeCase).where(DisputeCase.booking_id == booking.id)
                 )
                 dispute_case = existing_dispute.scalar_one_or_none()
-                if dispute_case and dispute_case.status != DisputeStatus.RESOLVED:
+                if dispute_case and dispute_case.status not in (DisputeStatus.CLOSED, DisputeStatus.RESOLVED_BUYER, DisputeStatus.RESOLVED_MECHANIC):
                     if dispute_status == "won":
-                        dispute_case.status = DisputeStatus.RESOLVED
-                        dispute_case.resolution = "Dispute won — funds returned to platform"
+                        dispute_case.status = DisputeStatus.CLOSED
+                        dispute_case.resolution_notes = "Dispute won — funds returned to platform"
                     elif dispute_status == "lost":
-                        dispute_case.status = DisputeStatus.RESOLVED
-                        dispute_case.resolution = "Dispute lost — funds withdrawn by cardholder"
+                        dispute_case.status = DisputeStatus.CLOSED
+                        dispute_case.resolution_notes = "Dispute lost — funds withdrawn by cardholder"
                     await db.flush()
 
     return {"status": "ok"}

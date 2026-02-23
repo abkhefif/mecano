@@ -32,7 +32,7 @@ services:
           type: redis
           property: connectionString
       - key: APP_ENV
-        value: staging
+        value: production
       - key: JWT_SECRET
         generateValue: true
       - key: FRONTEND_URL

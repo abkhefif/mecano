@@ -321,11 +321,21 @@ async def health_check(request: Request):
         db_ok = result.get("database") == "connected"
         redis_ok = result.get("redis") == "connected"
         sched_ok = result.get("scheduler") == "running"
-        overall = "ok" if (db_ok and redis_ok and sched_ok) else "unhealthy"
-        return {
-            "status": overall,
-            "database": "ok" if db_ok else "error",
-            "redis": "ok" if redis_ok else "error",
-            "scheduler": "ok" if sched_ok else "error",
-        }
+        # M-008: Database down = unhealthy (503); Redis/scheduler down = degraded (200)
+        if not db_ok:
+            overall = "unhealthy"
+        elif not redis_ok or not sched_ok:
+            overall = "degraded"
+        else:
+            overall = "ok"
+        status_code = 503 if overall == "unhealthy" else 200
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "status": overall,
+                "database": "ok" if db_ok else "error",
+                "redis": "ok" if redis_ok else "error",
+                "scheduler": "ok" if sched_ok else "error",
+            },
+        )
     return result
