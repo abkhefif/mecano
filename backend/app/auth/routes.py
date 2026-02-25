@@ -228,6 +228,7 @@ async def register(request: Request, response: Response, body: RegisterRequest, 
                 last_name=body.last_name,
                 phone=body.phone,
                 is_verified=False,
+                is_active=True,
             )
             db.add(user)
             await db.flush()
