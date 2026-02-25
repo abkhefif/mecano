@@ -260,8 +260,7 @@ async def suspend_user(
         profile = profile_result.scalar_one_or_none()
         if profile:
             if body.suspended:
-                # Suspend for 30 days by default
-                profile.suspended_until = datetime.now(timezone.utc) + timedelta(days=30)
+                profile.suspended_until = datetime.now(timezone.utc) + timedelta(days=body.suspension_days)
                 profile.is_active = False
             else:
                 profile.suspended_until = None
@@ -285,6 +284,60 @@ async def suspend_user(
 
     return {
         "status": "suspended" if body.suspended else "active",
+        "user_id": str(user_id),
+    }
+
+
+# --- 4b. Deactivate buyer ---
+
+
+@router.patch("/users/{user_id}/deactivate")
+@limiter.limit("10/minute")
+async def deactivate_buyer(
+    request: Request,
+    user_id: uuid.UUID,
+    body: SuspendUserRequest,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """AUDIT-12: Deactivate or reactivate a buyer account.
+
+    Deactivated buyers cannot log in or create bookings.
+    """
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if user.role == UserRole.ADMIN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot deactivate admin users")
+
+    if user.role == UserRole.MECHANIC:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Use /admin/users/{id}/suspend for mechanic accounts.",
+        )
+
+    user.is_active = not body.suspended
+
+    # Audit log
+    db.add(AuditLog(
+        action="deactivate_buyer" if body.suspended else "reactivate_buyer",
+        admin_user_id=admin.id,
+        target_user_id=user.id,
+        detail=body.reason,
+    ))
+    await db.flush()
+    logger.info(
+        "buyer_deactivation_changed",
+        user_id=str(user_id),
+        deactivated=body.suspended,
+        admin_id=str(admin.id),
+        reason=body.reason,
+    )
+
+    return {
+        "status": "deactivated" if body.suspended else "active",
         "user_id": str(user_id),
     }
 

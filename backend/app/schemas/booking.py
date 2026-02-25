@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, time
+from datetime import datetime, time, timezone
 from decimal import Decimal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -32,11 +32,12 @@ class BookingCreateRequest(BaseModel):
     @field_validator("vehicle_year")
     @classmethod
     def validate_vehicle_year(cls, v: int) -> int:
-        max_year = datetime.now().year + 1
+        max_year = datetime.now(timezone.utc).year + 1
         if v > max_year:
             raise ValueError(f"vehicle_year must be at most {max_year}")
         return v
-    vehicle_plate: str | None = Field(None, max_length=20)
+    # AUDIT-10: Regex restricts to alphanumeric + hyphens/spaces (French/EU plates)
+    vehicle_plate: str | None = Field(None, max_length=20, pattern=r"^[A-Za-z0-9\- ]+$")
     obd_requested: bool = False
     meeting_address: str = Field(min_length=1, max_length=500)
     meeting_lat: float = Field(ge=-90, le=90)
@@ -61,6 +62,7 @@ class BookingResponse(BaseModel):
     obd_requested: bool
     base_price: Decimal
     travel_fees: Decimal
+    stripe_fee: Decimal
     total_price: Decimal
     commission_amount: Decimal
     mechanic_payout: Decimal
@@ -94,6 +96,7 @@ class BookingBuyerResponse(BaseModel):
     obd_requested: bool
     base_price: Decimal
     travel_fees: Decimal
+    stripe_fee: Decimal
     total_price: Decimal
     check_in_at: datetime | None
     check_out_at: datetime | None

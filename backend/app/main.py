@@ -21,6 +21,7 @@ from app.messages.routes import router as messages_router
 from app.middleware import SecurityHeadersMiddleware
 from app.notifications.routes import router as notifications_router
 from app.payments.routes import router as payments_router
+from app.proposals.routes import router as proposals_router
 from app.referrals.routes import router as referrals_router
 from app.reports.routes import router as reports_router
 from app.reviews.routes import router as reviews_router
@@ -251,6 +252,7 @@ Instrumentator(
 
 
 @app.get("/metrics", include_in_schema=False)
+@limiter.limit("30/minute")
 async def metrics_endpoint(request: Request):
     """Prometheus metrics endpoint (protected by API key)."""
     from prometheus_client import generate_latest
@@ -281,6 +283,7 @@ app.include_router(reviews_router, prefix="/reviews", tags=["reviews"])
 app.include_router(referrals_router, prefix="/referrals", tags=["referrals"])
 app.include_router(messages_router, tags=["messages"])
 app.include_router(notifications_router, prefix="/notifications", tags=["notifications"])
+app.include_router(proposals_router, prefix="/proposals", tags=["proposals"])
 app.include_router(reports_router)
 app.include_router(admin_router)
 
