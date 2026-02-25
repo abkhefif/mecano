@@ -20,6 +20,8 @@ class User(Base):
     last_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # AUDIT-12: Admin can deactivate abusive buyers (or any user)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -27,6 +29,9 @@ class User(Base):
     expo_push_token: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # SEC-005: Track password change time to invalidate all pre-existing tokens
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # CRIT-5: OTP code for email verification
+    verification_code: Mapped[str | None] = mapped_column(String(6), nullable=True)
+    verification_code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     mechanic_profile: Mapped["MechanicProfile | None"] = relationship(
         "MechanicProfile", back_populates="user", uselist=False, lazy="raise"

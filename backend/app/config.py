@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = ""
 
     # Business rules
-    BASE_INSPECTION_PRICE: Decimal = Decimal("40.00")
+    BASE_INSPECTION_PRICE: Decimal = Decimal("50.00")
     OBD_SUPPLEMENT: Decimal = Decimal("25.00")
     PLATFORM_COMMISSION_RATE: Decimal = Decimal("0.20")
     TRAVEL_FEE_PER_KM: Decimal = Decimal("0.30")
@@ -113,8 +113,9 @@ class Settings(BaseSettings):
     # FIN-04: Stripe authorizations expire after 7 days; cap booking advance to 6
     STRIPE_AUTH_MAX_ADVANCE_DAYS: int = 6
 
-    # M-2: Proxy trust level for X-Forwarded-For IP extraction (0 = direct connection)
-    TRUSTED_PROXY_COUNT: int = 0
+    # AUDIT-13: Render uses a reverse proxy — default to 1 for correct IP extraction.
+    # Set to 0 only for direct connections (local dev without proxy).
+    TRUSTED_PROXY_COUNT: int = 1
 
     @model_validator(mode="after")
     def normalize_database_url(self) -> "Settings":
@@ -190,6 +191,12 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "METRICS_API_KEY must be set in production to protect the /metrics endpoint."
                 )
+            # AUDIT-17: Require RESEND_API_KEY in production — without it, emails
+            # (verification, reminders, password reset) are silently disabled.
+            if not self.RESEND_API_KEY:
+                raise ValueError(
+                    "RESEND_API_KEY must be set in production for email functionality."
+                )
         else:
             if self.DATABASE_URL == _DEFAULT_DATABASE_URL:
                 warnings.warn(
@@ -207,7 +214,7 @@ class Settings(BaseSettings):
                     "STRIPE_WEBHOOK_SECRET is empty — webhook verification will be insecure.",
                     stacklevel=2,
                 )
-            # SEC-005: Warn about missing email / storage config
+            # SEC-005: Warn about missing email / storage config (dev only)
             if not self.RESEND_API_KEY:
                 warnings.warn(
                     "RESEND_API_KEY is empty — email sending will be disabled.",

@@ -156,26 +156,32 @@ async def test_release_overdue_payments():
     """release_overdue_payments finds and captures overdue validated bookings."""
     from app.services.scheduler import release_overdue_payments
 
+    booking_id = uuid.uuid4()
     mock_booking = MagicMock()
-    mock_booking.id = uuid.uuid4()
+    mock_booking.id = booking_id
     mock_booking.status = BookingStatus.VALIDATED
     mock_booking.stripe_payment_intent_id = "pi_mock_overdue"
 
-    mock_scalars = MagicMock()
-    mock_scalars.all.return_value = [mock_booking]
-    mock_result = MagicMock()
-    mock_result.scalars.return_value = mock_scalars
+    # Phase 1 session: returns booking IDs via result.all()
+    mock_result_phase1 = MagicMock()
+    mock_result_phase1.all.return_value = [(booking_id,)]
+    mock_db_phase1 = AsyncMock()
+    mock_db_phase1.execute = AsyncMock(return_value=mock_result_phase1)
+    mock_ctx1 = AsyncMock()
+    mock_ctx1.__aenter__ = AsyncMock(return_value=mock_db_phase1)
+    mock_ctx1.__aexit__ = AsyncMock(return_value=False)
 
-    mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(return_value=mock_result)
-    mock_db.commit = AsyncMock()
-    mock_db.rollback = AsyncMock()
+    # Phase 2 session: returns full booking via scalar_one_or_none()
+    mock_result_phase2 = MagicMock()
+    mock_result_phase2.scalar_one_or_none.return_value = mock_booking
+    mock_db_phase2 = AsyncMock()
+    mock_db_phase2.execute = AsyncMock(return_value=mock_result_phase2)
+    mock_db_phase2.commit = AsyncMock()
+    mock_ctx2 = AsyncMock()
+    mock_ctx2.__aenter__ = AsyncMock(return_value=mock_db_phase2)
+    mock_ctx2.__aexit__ = AsyncMock(return_value=False)
 
-    mock_session_ctx = AsyncMock()
-    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
-    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
+    with patch("app.services.scheduler.async_session", side_effect=[mock_ctx1, mock_ctx2]), \
          patch("app.services.scheduler.capture_payment_intent", new_callable=AsyncMock) as mock_capture, \
          patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
         await release_overdue_payments()
@@ -188,34 +194,43 @@ async def test_release_overdue_payments():
 
 @pytest.mark.asyncio
 async def test_release_overdue_payments_stripe_failure():
-    """release_overdue_payments handles per-booking Stripe failure."""
+    """release_overdue_payments handles per-booking Stripe failure with isolated sessions."""
     from app.services.scheduler import release_overdue_payments
 
+    booking_id = uuid.uuid4()
     mock_booking = MagicMock()
-    mock_booking.id = uuid.uuid4()
+    mock_booking.id = booking_id
     mock_booking.status = BookingStatus.VALIDATED
     mock_booking.stripe_payment_intent_id = "pi_mock_fail"
 
-    mock_scalars = MagicMock()
-    mock_scalars.all.return_value = [mock_booking]
-    mock_result = MagicMock()
-    mock_result.scalars.return_value = mock_scalars
+    # Phase 1 session: returns booking IDs
+    mock_result_phase1 = MagicMock()
+    mock_result_phase1.all.return_value = [(booking_id,)]
+    mock_db_phase1 = AsyncMock()
+    mock_db_phase1.execute = AsyncMock(return_value=mock_result_phase1)
+    mock_ctx1 = AsyncMock()
+    mock_ctx1.__aenter__ = AsyncMock(return_value=mock_db_phase1)
+    mock_ctx1.__aexit__ = AsyncMock(return_value=False)
 
-    mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(return_value=mock_result)
-    mock_db.commit = AsyncMock()
-    mock_db.rollback = AsyncMock()
+    # Phase 2 session: returns booking, but Stripe capture will fail
+    mock_result_phase2 = MagicMock()
+    mock_result_phase2.scalar_one_or_none.return_value = mock_booking
+    mock_db_phase2 = AsyncMock()
+    mock_db_phase2.execute = AsyncMock(return_value=mock_result_phase2)
+    mock_db_phase2.commit = AsyncMock()
+    mock_ctx2 = AsyncMock()
+    mock_ctx2.__aenter__ = AsyncMock(return_value=mock_db_phase2)
+    mock_ctx2.__aexit__ = AsyncMock(return_value=False)
 
-    mock_session_ctx = AsyncMock()
-    mock_session_ctx.__aenter__ = AsyncMock(return_value=mock_db)
-    mock_session_ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("app.services.scheduler.async_session", return_value=mock_session_ctx), \
+    with patch("app.services.scheduler.async_session", side_effect=[mock_ctx1, mock_ctx2]), \
          patch("app.services.scheduler.capture_payment_intent", new_callable=AsyncMock, side_effect=Exception("fail")), \
          patch("app.services.scheduler._acquire_scheduler_lock", new_callable=AsyncMock, return_value=True):
-        # Should not raise
+        # Should not raise — exception caught per-booking
         await release_overdue_payments()
-        mock_db.rollback.assert_called()
+        # Status remains VALIDATED because capture failed before status update
+        assert mock_booking.status == BookingStatus.VALIDATED
+        # No explicit rollback — isolated session context manager handles cleanup
+        mock_db_phase2.commit.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -521,11 +536,12 @@ async def test_start_scheduler():
 
     with patch("app.services.scheduler.scheduler") as mock_scheduler:
         start_scheduler()
-        # Should have 12 add_job calls (pending, reminders, overdue, cleanup,
+        # Should have 13 add_job calls (pending, reminders, overdue, cleanup,
         # notify_unverified, cleanup_blacklisted_tokens, reset_no_show_weekly,
         # cleanup_old_notifications, cleanup_expired_push_tokens,
-        # detect_orphaned_files, cleanup_old_audit_logs, anonymize_old_bookings)
-        assert mock_scheduler.add_job.call_count == 12
+        # detect_orphaned_files, cleanup_old_audit_logs, anonymize_old_bookings,
+        # expire_pending_proposals)
+        assert mock_scheduler.add_job.call_count == 13
         mock_scheduler.start.assert_called_once()
 
 

@@ -56,6 +56,7 @@ from app.schemas.auth import (
 from app.services.email_service import (
     create_email_verification_token,
     decode_email_verification_token,
+    generate_verification_code,
     send_password_reset_email,
     send_verification_email,
 )
@@ -276,9 +277,15 @@ async def register(request: Request, response: Response, body: RegisterRequest, 
             content={"message": "Verification email sent. Check your inbox."},
         )
 
-    # Send verification email
+    # CRIT-5: Generate OTP code and store on user for verification
+    code = generate_verification_code()
+    user.verification_code = code
+    user.verification_code_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    await db.flush()
+
+    # Send verification email with OTP code
     verification_token = create_email_verification_token(user.email)
-    await send_verification_email(user.email, verification_token)
+    await send_verification_email(user.email, verification_token, code=code)
 
     # PERF-09: Increment Prometheus registration counter
     from app.metrics import USERS_REGISTERED
@@ -286,68 +293,111 @@ async def register(request: Request, response: Response, body: RegisterRequest, 
 
     logger.info("user_registered", user_id=str(user.id), role=body.role.value)
 
-    user_id_str = str(user.id)
-    return TokenResponse(
-        access_token=create_access_token(user_id_str),
-        refresh_token=create_refresh_token(user_id_str),
+    # AUDIT-9: Do NOT return JWT at registration — require email verification first.
+    # Returning tokens here would give full API access before the user verifies
+    # their email, bypassing is_verified checks on sensitive endpoints.
+    return JSONResponse(
+        status_code=status.HTTP_201_CREATED,
+        content={"message": "Verification email sent. Check your inbox."},
     )
 
 
 @router.post("/verify-email")
 @limiter.limit(AUTH_RATE_LIMIT)
 async def verify_email(request: Request, body: EmailVerifyRequest, db: AsyncSession = Depends(get_db)):
-    """Verify a user's email address using a JWT verification token."""
-    # SEC-R01: Single decode — decode_email_verification_token_full returns the full
-    # payload (including jti) so we don't need a second jwt.decode call.
-    from app.services.email_service import decode_email_verification_token_full
+    """Verify a user's email address using a JWT token or OTP code."""
 
-    token_payload = decode_email_verification_token_full(body.token)
-    if not token_payload:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid or expired verification token",
-        )
-    email = token_payload["sub"]
-    verify_jti = token_payload.get("jti")
-
-    # R-003: Check if the verification token has already been used
-    if verify_jti:
-        blacklisted = await db.execute(
-            select(BlacklistedToken).where(BlacklistedToken.jti == verify_jti)
-        )
-        if blacklisted.scalar_one_or_none():
+    # CRIT-5: OTP code flow (mobile app)
+    if body.code and body.email:
+        result = await db.execute(select(User).where(User.email == body.email))
+        user = result.scalar_one_or_none()
+        if not user:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="This verification token has already been used",
+                detail="Invalid or expired verification code",
             )
 
-    result = await db.execute(select(User).where(User.email == email))
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
+        if user.is_verified:
+            return {"status": "already_verified"}
 
-    if user.is_verified:
-        return {"status": "already_verified"}
+        # Validate code and expiry
+        if (
+            not user.verification_code
+            or not user.verification_code_expires_at
+            or user.verification_code != body.code
+            or user.verification_code_expires_at < datetime.now(timezone.utc)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired verification code",
+            )
 
-    user.is_verified = True
-    await db.flush()
-
-    # R-003: Blacklist the verification token to prevent reuse
-    if verify_jti:
-        verify_exp = token_payload.get("exp")
-        verify_expires_at = (
-            datetime.fromtimestamp(verify_exp, tz=timezone.utc)
-            if verify_exp
-            else datetime.now(timezone.utc)
-        )
-        db.add(BlacklistedToken(jti=verify_jti, expires_at=verify_expires_at))
+        user.is_verified = True
+        user.verification_code = None
+        user.verification_code_expires_at = None
         await db.flush()
 
-    logger.info("email_verified", user_id=str(user.id))
-    return {"status": "verified"}
+        logger.info("email_verified_otp", user_id=str(user.id))
+        return {"status": "verified"}
+
+    # JWT token flow (web link fallback)
+    if body.token:
+        from app.services.email_service import decode_email_verification_token_full
+
+        token_payload = decode_email_verification_token_full(body.token)
+        if not token_payload:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid or expired verification token",
+            )
+        email = token_payload["sub"]
+        verify_jti = token_payload.get("jti")
+
+        # R-003: Check if the verification token has already been used
+        if verify_jti:
+            blacklisted = await db.execute(
+                select(BlacklistedToken).where(BlacklistedToken.jti == verify_jti)
+            )
+            if blacklisted.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="This verification token has already been used",
+                )
+
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found",
+            )
+
+        if user.is_verified:
+            return {"status": "already_verified"}
+
+        user.is_verified = True
+        user.verification_code = None
+        user.verification_code_expires_at = None
+        await db.flush()
+
+        # R-003: Blacklist the verification token to prevent reuse
+        if verify_jti:
+            verify_exp = token_payload.get("exp")
+            verify_expires_at = (
+                datetime.fromtimestamp(verify_exp, tz=timezone.utc)
+                if verify_exp
+                else datetime.now(timezone.utc)
+            )
+            db.add(BlacklistedToken(jti=verify_jti, expires_at=verify_expires_at))
+            await db.flush()
+
+        logger.info("email_verified", user_id=str(user.id))
+        return {"status": "verified"}
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Either 'token' or both 'code' and 'email' are required",
+    )
 
 
 @router.post("/resend-verification")
@@ -361,8 +411,14 @@ async def resend_verification(request: Request, body: ResendVerificationRequest,
     if not user or user.is_verified:
         return {"status": "sent"}
 
+    # CRIT-5: Regenerate OTP code on resend
+    code = generate_verification_code()
+    user.verification_code = code
+    user.verification_code_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    await db.flush()
+
     verification_token = create_email_verification_token(user.email)
-    await send_verification_email(user.email, verification_token)
+    await send_verification_email(user.email, verification_token, code=code)
 
     logger.info("verification_email_resent", user_id=str(user.id))
     return {"status": "sent"}

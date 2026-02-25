@@ -45,7 +45,7 @@ async def test_create_booking_success(
     data = response.json()
     assert data["booking"]["status"] == "pending_acceptance"
     assert data["booking"]["vehicle_brand"] == "Peugeot"
-    assert float(data["booking"]["base_price"]) == 40.0
+    assert float(data["booking"]["base_price"]) == 50.0
 
 
 @pytest.mark.asyncio

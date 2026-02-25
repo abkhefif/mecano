@@ -46,20 +46,22 @@ class TestTravelFees:
 class TestBookingPricing:
     def test_no_travel_fees(self):
         pricing = calculate_booking_pricing(5.0, 10)
-        assert pricing["base_price"] == Decimal("40.00")
+        assert pricing["base_price"] == Decimal("50.00")
         assert pricing["travel_fees"] == Decimal("0.00")
-        assert pricing["total_price"] == Decimal("40.00")
-        assert pricing["commission_amount"] == Decimal("8.00")
-        assert pricing["mechanic_payout"] == Decimal("32.00")
+        assert pricing["mechanic_payout"] == Decimal("50.00")
+        assert pricing["commission_rate"] == Decimal("0.20")
+        assert pricing["commission_amount"] == Decimal("10.00")
+        # total = mechanic_payout + commission + stripe_fee
+        assert pricing["total_price"] == Decimal("50.00") + Decimal("10.00") + pricing["stripe_fee"]
 
     def test_with_travel_fees(self):
         pricing = calculate_booking_pricing(30.0, 10)
-        assert pricing["base_price"] == Decimal("40.00")
+        assert pricing["base_price"] == Decimal("50.00")
         assert pricing["travel_fees"] == Decimal("6.00")
-        assert pricing["total_price"] == Decimal("46.00")
+        assert pricing["mechanic_payout"] == Decimal("56.00")
         assert pricing["commission_rate"] == Decimal("0.20")
-        assert pricing["commission_amount"] == Decimal("9.20")
-        assert pricing["mechanic_payout"] == Decimal("36.80")
+        assert pricing["commission_amount"] == Decimal("11.20")
+        assert pricing["total_price"] == Decimal("56.00") + Decimal("11.20") + pricing["stripe_fee"]
 
 
 class TestCodeGenerator:

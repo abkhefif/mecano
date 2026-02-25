@@ -61,6 +61,7 @@ class Booking(Base):
     obd_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     base_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     travel_fees: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=Decimal("0.00"))
+    stripe_fee: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, server_default="0.00", default=Decimal("0.00"))
     total_price: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     commission_rate: Mapped[Decimal] = mapped_column(Numeric(5, 4), nullable=False)
     commission_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)

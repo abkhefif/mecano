@@ -3,6 +3,7 @@ import pytest_asyncio
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.enums import UserRole
 from app.models.user import User
 
 
@@ -20,8 +21,8 @@ async def test_register_buyer(client: AsyncClient):
     )
     assert response.status_code == 201
     data = response.json()
-    assert "access_token" in data
-    assert data["token_type"] == "bearer"
+    # AUDIT-9: Registration no longer returns JWT — user must verify email first
+    assert "message" in data
 
 
 @pytest.mark.asyncio
@@ -37,7 +38,8 @@ async def test_register_mechanic(client: AsyncClient):
     )
     assert response.status_code == 201
     data = response.json()
-    assert "access_token" in data
+    # AUDIT-9: Registration no longer returns JWT
+    assert "message" in data
 
 
 @pytest.mark.asyncio
@@ -143,8 +145,11 @@ async def test_get_me_invalid_token(client: AsyncClient):
 
 
 @pytest.mark.asyncio
-async def test_register_mechanic_creates_profile(client: AsyncClient):
+async def test_register_mechanic_creates_profile(client: AsyncClient, db: AsyncSession):
     """Test that registering as a mechanic also creates a MechanicProfile."""
+    from sqlalchemy import select
+    from app.models.mechanic_profile import MechanicProfile
+
     response = await client.post(
         "/auth/register",
         json={
@@ -156,21 +161,25 @@ async def test_register_mechanic_creates_profile(client: AsyncClient):
         },
     )
     assert response.status_code == 201
-    token = response.json()["access_token"]
+    # AUDIT-9: Registration no longer returns JWT
+    assert "message" in response.json()
 
-    # Verify the profile was created via /auth/me
-    me_response = await client.get(
-        "/auth/me", headers={"Authorization": f"Bearer {token}"}
+    # Verify the profile was created via DB query
+    result = await db.execute(select(User).where(User.email == "newmech_profile@test.com"))
+    user = result.scalar_one()
+    assert user.role == UserRole.MECHANIC
+
+    profile_result = await db.execute(
+        select(MechanicProfile).where(MechanicProfile.user_id == user.id)
     )
-    assert me_response.status_code == 200
-    data = me_response.json()
-    assert data["role"] == "mechanic"
-    assert data["mechanic_profile"] is not None
+    assert profile_result.scalar_one_or_none() is not None
 
 
 @pytest.mark.asyncio
-async def test_register_buyer_with_phone(client: AsyncClient):
+async def test_register_buyer_with_phone(client: AsyncClient, db: AsyncSession):
     """Test registering a buyer with a phone number."""
+    from sqlalchemy import select
+
     response = await client.post(
         "/auth/register",
         json={
@@ -182,13 +191,13 @@ async def test_register_buyer_with_phone(client: AsyncClient):
         },
     )
     assert response.status_code == 201
-    token = response.json()["access_token"]
+    # AUDIT-9: Registration no longer returns JWT
+    assert "message" in response.json()
 
-    me_response = await client.get(
-        "/auth/me", headers={"Authorization": f"Bearer {token}"}
-    )
-    assert me_response.status_code == 200
-    assert me_response.json()["phone"] == "+33600000888"
+    # Verify phone was stored via DB query
+    result = await db.execute(select(User).where(User.email == "buyerphone@test.com"))
+    user = result.scalar_one()
+    assert user.phone == "+33600000888"
 
 
 @pytest.mark.asyncio

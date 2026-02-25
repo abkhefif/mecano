@@ -4,6 +4,7 @@ Generates JWT-based verification tokens and sends emails via Resend.
 In dev mode (no RESEND_API_KEY), logs a warning and skips sending.
 """
 
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from html import escape  # noqa: F401 — M-02: available for escaping user values in email templates
@@ -29,6 +30,11 @@ def _get_email_client() -> httpx.AsyncClient:
             timeout=httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0),
         )
     return _email_client
+
+
+def generate_verification_code() -> str:
+    """Generate a cryptographically secure 6-digit OTP code."""
+    return str(secrets.randbelow(900000) + 100000)
 
 
 def create_email_verification_token(email: str) -> str:
@@ -127,11 +133,16 @@ async def send_password_reset_email(to_email: str, reset_token: str) -> bool:
         return False
 
 
-async def send_verification_email(email: str, token: str) -> bool:
+async def send_verification_email(email: str, token: str, code: str | None = None) -> bool:
     """Send a verification email via Resend API.
 
     If RESEND_API_KEY is not set, logs a warning and returns False (dev mode).
     Returns True if the email was sent successfully.
+
+    Args:
+        email: Recipient email address.
+        token: JWT verification token (for web link fallback).
+        code: 6-digit OTP code displayed prominently in the email.
     """
     if not settings.RESEND_API_KEY:
         logger.warning(
@@ -144,17 +155,36 @@ async def send_verification_email(email: str, token: str) -> bool:
     # L-4: Escape link to prevent XSS if token format ever changes
     verification_link = escape(f"{settings.FRONTEND_URL}/verify?token={token}")
 
-    payload = {
-        "from": "eMecano <noreply@emecano.fr>",
-        "to": [email],
-        "subject": "Verifiez votre adresse email - eMecano",
-        "html": (
+    # Build HTML body — OTP code shown prominently, link as fallback
+    if code:
+        html_body = (
+            "<h2>Bienvenue sur eMecano !</h2>"
+            "<p>Voici votre code de verification :</p>"
+            '<div style="text-align:center;margin:24px 0;">'
+            f'<span style="font-size:32px;font-weight:bold;letter-spacing:8px;'
+            f'background:#f0f0f0;padding:16px 32px;border-radius:8px;">{escape(code)}</span>'
+            "</div>"
+            "<p>Saisissez ce code dans l'application pour verifier votre email.</p>"
+            "<p>Ce code expire dans 24 heures.</p>"
+            "<p style='color:#888;font-size:12px;margin-top:24px;'>"
+            "Vous pouvez aussi "
+            f'<a href="{verification_link}">cliquer ici</a> pour verifier.</p>'
+            "<p>Si vous n'avez pas cree de compte, ignorez cet email.</p>"
+        )
+    else:
+        html_body = (
             "<h2>Bienvenue sur eMecano !</h2>"
             "<p>Cliquez sur le lien ci-dessous pour verifier votre adresse email :</p>"
             f'<p><a href="{verification_link}">Verifier mon email</a></p>'
             "<p>Ce lien expire dans 24 heures.</p>"
             "<p>Si vous n'avez pas cree de compte, ignorez cet email.</p>"
-        ),
+        )
+
+    payload = {
+        "from": "eMecano <noreply@emecano.fr>",
+        "to": [email],
+        "subject": "Votre code de verification eMecano",
+        "html": html_body,
     }
 
     try:

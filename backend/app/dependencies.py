@@ -80,6 +80,13 @@ async def get_current_user(
             detail="User not found",
         )
 
+    # AUDIT-12: Block deactivated users at the auth level
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account has been deactivated. Contact support for more information.",
+        )
+
     # SEC-005: Reject tokens issued before the last password change.
     # This invalidates ALL sessions across all devices when a password is changed.
     if user.password_changed_at:

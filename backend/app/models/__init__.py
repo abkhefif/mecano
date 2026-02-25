@@ -2,6 +2,7 @@ from app.models.audit_log import AuditLog
 from app.models.availability import Availability
 from app.models.blacklisted_token import BlacklistedToken
 from app.models.booking import Booking
+from app.models.date_proposal import DateProposal
 from app.models.diploma import Diploma
 from app.models.dispute import DisputeCase
 from app.models.inspection import InspectionChecklist
@@ -21,6 +22,7 @@ __all__ = [
     "MechanicProfile",
     "Availability",
     "Booking",
+    "DateProposal",
     "BlacklistedToken",
     "Diploma",
     "ValidationProof",

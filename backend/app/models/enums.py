@@ -102,6 +102,15 @@ class DisputeStatus(str, enum.Enum):
     CLOSED = "closed"
 
 
+class ProposalStatus(str, enum.Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REFUSED = "refused"
+    COUNTER_PROPOSED = "counter_proposed"
+    EXPIRED = "expired"
+    CANCELLED = "cancelled"
+
+
 class NotificationType(str, enum.Enum):
     BOOKING_CREATED = "booking_created"
     BOOKING_CONFIRMED = "booking_confirmed"
@@ -113,6 +122,10 @@ class NotificationType(str, enum.Enum):
     REMINDER = "reminder"
     NO_SHOW = "no_show"
     PROFILE_VERIFICATION = "profile_verification"
+    PROPOSAL_RECEIVED = "proposal_received"
+    PROPOSAL_ACCEPTED = "proposal_accepted"
+    PROPOSAL_REFUSED = "proposal_refused"
+    PROPOSAL_COUNTER = "proposal_counter"
 
 
 class ServiceLocation(str, enum.Enum):

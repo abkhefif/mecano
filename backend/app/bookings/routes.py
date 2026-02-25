@@ -128,6 +128,13 @@ async def create_booking(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new booking (buyer only). Initiates Stripe payment hold."""
+    # AUDIT-1: Require phone number before transaction
+    if not buyer.phone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Un numéro de téléphone est requis pour effectuer une réservation. Mettez à jour votre profil.",
+        )
+
     # Fetch availability with row-level lock to prevent double-booking.
     # Use nowait=True to fail immediately instead of blocking indefinitely,
     # which prevents deadlocks when two concurrent requests target the same slot.
@@ -267,6 +274,15 @@ async def create_booking(
     # BUG-006: Prevent buyer from booking their own services
     if mechanic.user_id == buyer.id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot book your own services")
+
+    # AUDIT-1: Verify mechanic has phone for buyer contact
+    mech_user_result = await db.execute(select(User).where(User.id == mechanic.user_id))
+    mech_user = mech_user_result.scalar_one_or_none()
+    if mech_user and not mech_user.phone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ce mécanicien doit d'abord renseigner son numéro de téléphone.",
+        )
 
     if not mechanic.is_identity_verified:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Mechanic not verified")
@@ -663,6 +679,8 @@ async def cancel_booking(
             elif refund_pct == 0:
                 # H-004: 0% refund = late cancellation — capture payment for the mechanic
                 await capture_payment_intent(booking.stripe_payment_intent_id)
+                # AUDIT-15: Mark payment as released since we captured it
+                booking.payment_released_at = datetime.now(timezone.utc)
         except StripeServiceError as e:
             logger.error("stripe_cancel_error", error=str(e), booking_id=str(booking.id))
             raise HTTPException(
@@ -1476,9 +1494,11 @@ async def get_location(
     if booking.mechanic_lat is None or booking.mechanic_lng is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No location available")
 
+    # AUDIT-16: Round to 3 decimals (~111m precision) — sufficient for real-time
+    # tracking without exposing the mechanic's exact position to the metre.
     return {
-        "lat": float(booking.mechanic_lat),
-        "lng": float(booking.mechanic_lng),
+        "lat": round(float(booking.mechanic_lat), 3),
+        "lng": round(float(booking.mechanic_lng), 3),
         "updated_at": booking.mechanic_location_updated_at.isoformat() if booking.mechanic_location_updated_at else None,
     }
 

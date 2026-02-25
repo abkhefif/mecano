@@ -17,7 +17,8 @@ from app.database import async_session
 from app.models.availability import Availability
 from app.models.blacklisted_token import BlacklistedToken
 from app.models.booking import Booking
-from app.models.enums import BookingStatus, NotificationType
+from app.models.date_proposal import DateProposal
+from app.models.enums import BookingStatus, NotificationType, ProposalStatus
 from app.models.mechanic_profile import MechanicProfile
 from app.models.notification import Notification
 from app.models.user import User
@@ -156,46 +157,59 @@ async def release_overdue_payments() -> None:
     This handles cases where the one-time scheduled job was lost (server restart).
     Processes at most SCHEDULER_BATCH_SIZE bookings per run to bound memory usage;
     remaining bookings will be picked up in the next scheduled interval.
+
+    AUDIT-8: Each booking is processed in its own isolated session to prevent
+    a rollback on one booking from corrupting the session state for others.
     """
     if not await _acquire_scheduler_lock("release_overdue_payments"):
         return
+
+    # Phase 1: Collect booking IDs in a read-only session
     async with async_session() as db:
         cutoff = datetime.now(timezone.utc) - timedelta(
             hours=settings.PAYMENT_RELEASE_DELAY_HOURS
         )
+        # AUDIT-14: updated_at is used as a proxy for "validated_at" since there is
+        # no dedicated field.  After status becomes VALIDATED nothing else should
+        # modify the row until payment release, so updated_at is reliable here.
         result = await db.execute(
-            select(Booking).where(
+            select(Booking.id).where(
                 Booking.status == BookingStatus.VALIDATED,
                 Booking.updated_at < cutoff,
-            ).with_for_update(skip_locked=True)
-            .limit(SCHEDULER_BATCH_SIZE)
+            ).limit(SCHEDULER_BATCH_SIZE)
         )
-        bookings = result.scalars().all()
+        booking_ids = [row[0] for row in result.all()]
 
-        for booking in bookings:
-            try:
-                # I-002: Per-booking commit + rollback ensures each booking is
-                # processed in isolation. If one booking fails (e.g. Stripe
-                # error), the rollback resets the session state so subsequent
-                # bookings can proceed without stale-session issues.
+    # Phase 2: Process each booking in its own isolated session
+    for booking_id in booking_ids:
+        try:
+            async with async_session() as session:
+                result = await session.execute(
+                    select(Booking)
+                    .where(Booking.id == booking_id)
+                    .with_for_update(skip_locked=True)
+                )
+                booking = result.scalar_one_or_none()
+                if not booking or booking.status != BookingStatus.VALIDATED:
+                    continue
+
                 if booking.stripe_payment_intent_id:
                     await capture_payment_intent(
                         booking.stripe_payment_intent_id,
-                        idempotency_key=f"release_overdue_{booking.id}",
+                        idempotency_key=f"release_overdue_{booking_id}",
                     )
                 booking.status = BookingStatus.COMPLETED
                 booking.payment_released_at = datetime.now(timezone.utc)
-                await db.commit()
+                await session.commit()
                 SCHEDULER_JOB_RUNS.labels(job_name="release_overdue_payments", status="success").inc()
-                logger.info("overdue_payment_released", booking_id=str(booking.id))
-            except Exception as e:
-                await db.rollback()
-                SCHEDULER_JOB_RUNS.labels(job_name="release_overdue_payments", status="error").inc()
-                logger.exception(
-                    "overdue_payment_release_failed",
-                    booking_id=str(booking.id),
-                    error_type=type(e).__name__,
-                )
+                logger.info("overdue_payment_released", booking_id=str(booking_id))
+        except Exception as e:
+            SCHEDULER_JOB_RUNS.labels(job_name="release_overdue_payments", status="error").inc()
+            logger.exception(
+                "overdue_payment_release_failed",
+                booking_id=str(booking_id),
+                error_type=type(e).__name__,
+            )
 
 
 async def check_pending_acceptances() -> None:
@@ -781,6 +795,65 @@ async def detect_orphaned_files() -> None:
     )
 
 
+async def expire_pending_proposals() -> None:
+    """Expire date proposals that have been pending for more than 48 hours."""
+    if not await _acquire_scheduler_lock("expire_pending_proposals"):
+        return
+    async with async_session() as db:
+        now = datetime.now(timezone.utc)
+        result = await db.execute(
+            select(DateProposal).where(
+                DateProposal.status == ProposalStatus.PENDING,
+                DateProposal.expires_at < now,
+            ).limit(SCHEDULER_BATCH_SIZE)
+        )
+        proposals = result.scalars().all()
+
+        expired_count = 0
+        for proposal in proposals:
+            try:
+                proposal.status = ProposalStatus.EXPIRED
+
+                # Notify both parties
+                await create_notification(
+                    db=db,
+                    user_id=proposal.buyer_id,
+                    notification_type=NotificationType.PROPOSAL_REFUSED,
+                    title="Proposition expiree",
+                    body="Votre proposition de rendez-vous a expire sans reponse.",
+                    data={"proposal_id": str(proposal.id), "type": "proposal_refused"},
+                )
+
+                from app.models.mechanic_profile import MechanicProfile as MP
+                mech_result = await db.execute(
+                    select(MP).where(MP.id == proposal.mechanic_id)
+                )
+                mech = mech_result.scalar_one_or_none()
+                if mech:
+                    await create_notification(
+                        db=db,
+                        user_id=mech.user_id,
+                        notification_type=NotificationType.PROPOSAL_REFUSED,
+                        title="Proposition expiree",
+                        body="Une proposition de rendez-vous a expire sans reponse.",
+                        data={"proposal_id": str(proposal.id), "type": "proposal_refused"},
+                    )
+
+                await db.commit()
+                expired_count += 1
+            except Exception as e:
+                await db.rollback()
+                logger.exception(
+                    "expire_proposal_failed",
+                    proposal_id=str(proposal.id),
+                    error_type=type(e).__name__,
+                )
+
+        SCHEDULER_JOB_RUNS.labels(job_name="expire_pending_proposals", status="success").inc()
+        if expired_count:
+            logger.info("proposals_expired", expired_count=expired_count)
+
+
 async def cleanup_old_audit_logs() -> None:
     """GDPR-GAP-1: Delete audit logs older than 3 years.
 
@@ -937,6 +1010,15 @@ def start_scheduler() -> None:
         hour=3,
         minute=0,
         id="detect_orphaned_files",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+    # Expire pending date proposals (every hour)
+    scheduler.add_job(
+        expire_pending_proposals,
+        "interval",
+        hours=1,
+        id="expire_pending_proposals",
         replace_existing=True,
         misfire_grace_time=3600,
     )

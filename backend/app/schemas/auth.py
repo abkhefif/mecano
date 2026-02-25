@@ -1,9 +1,26 @@
+import re
 import uuid
 from datetime import datetime
 from enum import Enum
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from app.models.enums import UserRole
+
+_NAME_PATTERN = re.compile(r"^[a-zA-ZÀ-ÿ\s\-']+$")
+
+
+def validate_name_field(v: str | None, field_label: str) -> str | None:
+    """Validate a name field: min 3 chars, alphabetic only (accents, hyphens, apostrophes allowed)."""
+    if v is None:
+        return v
+    v = v.strip()
+    if not v:
+        return None
+    if len(v) < 3:
+        raise ValueError(f"{field_label} doit contenir au moins 3 caractères")
+    if not _NAME_PATTERN.match(v):
+        raise ValueError(f"{field_label} ne doit contenir que des lettres, espaces, tirets ou apostrophes")
+    return v
 
 
 def validate_password_complexity(password: str) -> str:
@@ -22,11 +39,21 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     role: RegistrationRole
-    first_name: str | None = Field(None, max_length=100)
-    last_name: str | None = Field(None, max_length=100)
+    first_name: str | None = Field(None, min_length=3, max_length=100)
+    last_name: str | None = Field(None, min_length=3, max_length=100)
     phone: str | None = Field(None, pattern=r"^\+?[0-9]{10,15}$")
     referral_code: str | None = Field(None, max_length=20)
     cgu_accepted: bool = Field(False, validate_default=True)
+
+    @field_validator("first_name")
+    @classmethod
+    def validate_first_name(cls, v: str | None) -> str | None:
+        return validate_name_field(v, "Le prénom")
+
+    @field_validator("last_name")
+    @classmethod
+    def validate_last_name(cls, v: str | None) -> str | None:
+        return validate_name_field(v, "Le nom")
 
     @field_validator("password")
     @classmethod
@@ -90,10 +117,20 @@ class MechanicProfileResponse(BaseModel):
 
 class UserUpdateRequest(BaseModel):
     email: EmailStr | None = None
-    first_name: str | None = Field(None, max_length=100)
-    last_name: str | None = Field(None, max_length=100)
+    first_name: str | None = Field(None, min_length=3, max_length=100)
+    last_name: str | None = Field(None, min_length=3, max_length=100)
     # L-01: Add phone pattern validation matching RegisterRequest
     phone: str | None = Field(None, pattern=r"^\+?[0-9]{10,15}$")
+
+    @field_validator("first_name")
+    @classmethod
+    def validate_first_name(cls, v: str | None) -> str | None:
+        return validate_name_field(v, "Le prénom")
+
+    @field_validator("last_name")
+    @classmethod
+    def validate_last_name(cls, v: str | None) -> str | None:
+        return validate_name_field(v, "Le nom")
 
 
 class UserWithProfileResponse(UserResponse):
@@ -113,7 +150,19 @@ class PushTokenRequest(BaseModel):
 
 
 class EmailVerifyRequest(BaseModel):
-    token: str
+    token: str | None = None
+    code: str | None = Field(None, pattern=r"^\d{6}$")
+    email: EmailStr | None = None
+
+    @field_validator("code")
+    @classmethod
+    def validate_code_requires_email(cls, v: str | None, info) -> str | None:
+        # Validation is done at model level in model_validator
+        return v
+
+    def model_post_init(self, __context) -> None:
+        if not self.token and not (self.code and self.email):
+            raise ValueError("Either 'token' or both 'code' and 'email' are required")
 
 
 class ResendVerificationRequest(BaseModel):

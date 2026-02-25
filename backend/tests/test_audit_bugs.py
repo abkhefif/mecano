@@ -560,6 +560,9 @@ async def test_mechanic_registration_creates_profile_at_null_island(
     FIX VERIFIED: Mechanic profile created during registration now has
     city_lat=None, city_lng=None instead of 0.0/0.0 (Null Island).
     """
+    from sqlalchemy import select
+    from app.models.mechanic_profile import MechanicProfile
+
     response = await client.post(
         "/auth/register",
         json={
@@ -570,19 +573,21 @@ async def test_mechanic_registration_creates_profile_at_null_island(
         },
     )
     assert response.status_code == 201
-    token = response.json()["access_token"]
+    # AUDIT-9: Registration no longer returns JWT
+    assert "message" in response.json()
 
-    # Check the profile via /auth/me
-    me_response = await client.get(
-        "/auth/me", headers={"Authorization": f"Bearer {token}"}
+    # Check the profile via DB query
+    result = await db.execute(select(User).where(User.email == "nullisland_mech@test.com"))
+    user = result.scalar_one()
+    profile_result = await db.execute(
+        select(MechanicProfile).where(MechanicProfile.user_id == user.id)
     )
-    assert me_response.status_code == 200
-    profile = me_response.json()["mechanic_profile"]
+    profile = profile_result.scalar_one()
     assert profile is not None
     # FIX: Coordinates are None until the mechanic sets their city
-    assert profile["city_lat"] is None
-    assert profile["city_lng"] is None
-    assert profile["city"] == ""
+    assert profile.city_lat is None
+    assert profile.city_lng is None
+    assert profile.city == ""
 
 
 # ============================================================
