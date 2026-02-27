@@ -25,12 +25,104 @@ class StripeServiceError(Exception):
 logger = structlog.get_logger()
 
 
+async def get_or_create_customer(email: str, user_id: str, existing_customer_id: str | None = None) -> str:
+    """Get existing or create new Stripe Customer. Returns customer ID."""
+    if existing_customer_id:
+        return existing_customer_id
+
+    if not settings.STRIPE_SECRET_KEY:
+        logger.info("stripe_mock_customer", email=email)
+        return f"cus_mock_{user_id[:8]}"
+
+    start = _time.monotonic()
+    customer = await asyncio.wait_for(
+        asyncio.to_thread(
+            stripe.Customer.create,
+            email=email,
+            metadata={"user_id": user_id},
+            api_key=settings.STRIPE_SECRET_KEY,
+        ),
+        timeout=15.0,
+    )
+    STRIPE_CALL_DURATION.labels(operation="create_customer").observe(_time.monotonic() - start)
+    logger.info("stripe_customer_created", customer_id=customer.id)
+    return customer.id
+
+
+async def create_ephemeral_key(customer_id: str) -> str:
+    """Create an ephemeral key for the Stripe Customer (needed for PaymentSheet)."""
+    if not settings.STRIPE_SECRET_KEY or customer_id.startswith("cus_mock_"):
+        return "ek_mock_key"
+
+    start = _time.monotonic()
+    key = await asyncio.wait_for(
+        asyncio.to_thread(
+            stripe.EphemeralKey.create,
+            customer=customer_id,
+            stripe_version="2024-06-20",
+            api_key=settings.STRIPE_SECRET_KEY,
+        ),
+        timeout=15.0,
+    )
+    STRIPE_CALL_DURATION.labels(operation="create_ephemeral_key").observe(_time.monotonic() - start)
+    return key.secret
+
+
+async def list_payment_methods(customer_id: str) -> list[dict]:
+    """List saved payment methods for a customer."""
+    if not settings.STRIPE_SECRET_KEY or customer_id.startswith("cus_mock_"):
+        return []
+
+    start = _time.monotonic()
+    methods = await asyncio.wait_for(
+        asyncio.to_thread(
+            stripe.PaymentMethod.list,
+            customer=customer_id,
+            type="card",
+            api_key=settings.STRIPE_SECRET_KEY,
+        ),
+        timeout=15.0,
+    )
+    STRIPE_CALL_DURATION.labels(operation="list_payment_methods").observe(_time.monotonic() - start)
+
+    result = []
+    for pm in methods.data:
+        card = pm.card
+        result.append({
+            "id": pm.id,
+            "brand": card.brand,
+            "last4": card.last4,
+            "exp_month": card.exp_month,
+            "exp_year": card.exp_year,
+        })
+    return result
+
+
+async def detach_payment_method(payment_method_id: str) -> None:
+    """Detach (remove) a payment method from its customer."""
+    if not settings.STRIPE_SECRET_KEY or payment_method_id.startswith("pm_mock_"):
+        return
+
+    start = _time.monotonic()
+    await asyncio.wait_for(
+        asyncio.to_thread(
+            stripe.PaymentMethod.detach,
+            payment_method_id,
+            api_key=settings.STRIPE_SECRET_KEY,
+        ),
+        timeout=15.0,
+    )
+    STRIPE_CALL_DURATION.labels(operation="detach_payment_method").observe(_time.monotonic() - start)
+    logger.info("stripe_payment_method_detached", pm_id=payment_method_id)
+
+
 async def create_payment_intent(
     amount_cents: int,
     mechanic_stripe_account_id: str | None,
     commission_cents: int,
     metadata: dict[str, str] | None = None,
     idempotency_key: str | None = None,
+    customer_id: str | None = None,
 ) -> dict:
     """Create a Stripe PaymentIntent with platform fee.
 
@@ -60,6 +152,10 @@ async def create_payment_intent(
         "metadata": metadata or {},
         "api_key": settings.STRIPE_SECRET_KEY,
     }
+
+    if customer_id and not customer_id.startswith("cus_mock_"):
+        params["customer"] = customer_id
+        params["setup_future_usage"] = "off_session"
 
     # Only add Connect transfer for real Stripe accounts
     if mechanic_stripe_account_id and not is_mock_account:

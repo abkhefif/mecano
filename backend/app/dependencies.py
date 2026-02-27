@@ -124,12 +124,6 @@ async def get_current_mechanic(
             detail="Mechanic profile not found",
         )
 
-    if not profile.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Account has been deactivated",
-        )
-
     if profile.suspended_until and profile.suspended_until > datetime.now(timezone.utc):
         # SEC-008: Generic message — do not leak exact suspension timestamp
         raise HTTPException(

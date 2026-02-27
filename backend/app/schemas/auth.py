@@ -91,6 +91,7 @@ class UserResponse(BaseModel):
     last_name: str | None
     phone: str | None
     is_verified: bool
+    photo_url: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

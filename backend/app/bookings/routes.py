@@ -50,7 +50,9 @@ from app.services.stripe_service import (
     StripeServiceError,
     cancel_payment_intent,
     capture_payment_intent,
+    create_ephemeral_key,
     create_payment_intent,
+    get_or_create_customer,
     refund_payment_intent,
 )
 from app.config import settings
@@ -340,6 +342,15 @@ async def create_booking(
     amount_cents = int((pricing["total_price"] * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
     commission_cents = int((pricing["commission_amount"] * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
+    # Create or get Stripe Customer for saved payment methods
+    customer_id = await get_or_create_customer(
+        email=buyer.email,
+        user_id=str(buyer.id),
+        existing_customer_id=buyer.stripe_customer_id,
+    )
+    if not buyer.stripe_customer_id:
+        buyer.stripe_customer_id = customer_id
+
     intent = await create_payment_intent(
         amount_cents=amount_cents,
         mechanic_stripe_account_id=mechanic.stripe_account_id,
@@ -348,6 +359,7 @@ async def create_booking(
         # S-01: Include a nonce to prevent key collision if a prior booking for the
         # same slot was cancelled and re-created at the same price
         idempotency_key=f"booking_{buyer.id}_{body.availability_id}_{uuid.uuid4().hex[:8]}",
+        customer_id=customer_id,
     )
 
     # Create booking -- with compensating Stripe cancellation on DB failure
@@ -457,10 +469,14 @@ async def create_booking(
     # F-009: Use BookingBuyerResponse to hide commission_amount/mechanic_payout
     # from the buyer who creates the booking.
     # L-003: Set Cache-Control: no-store to prevent caching of client_secret
+    ephemeral_key = await create_ephemeral_key(customer_id)
+
     from fastapi.responses import JSONResponse as _JSONResponse
     response_data = BookingCreateResponse(
         booking=BookingBuyerResponse.model_validate(booking),
         client_secret=intent["client_secret"],
+        ephemeral_key=ephemeral_key,
+        customer_id=customer_id,
     )
     return _JSONResponse(
         status_code=status.HTTP_201_CREATED,

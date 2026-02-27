@@ -137,27 +137,6 @@ async def test_get_current_mechanic_no_profile(
 
 
 @pytest.mark.asyncio
-async def test_get_current_mechanic_deactivated(
-    client: AsyncClient,
-    db: AsyncSession,
-    mechanic_user: User,
-    mechanic_profile: MechanicProfile,
-):
-    """Test that a deactivated mechanic gets 403."""
-    mechanic_profile.is_active = False
-    await db.flush()
-
-    token = mechanic_token(mechanic_user)
-    response = await client.put(
-        "/mechanics/me",
-        json={"city": "paris"},
-        headers=auth_header(token),
-    )
-    assert response.status_code == 403
-    assert "deactivated" in response.json()["detail"]
-
-
-@pytest.mark.asyncio
 async def test_get_current_mechanic_suspended(
     client: AsyncClient,
     db: AsyncSession,

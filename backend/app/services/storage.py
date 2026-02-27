@@ -1,12 +1,17 @@
 import asyncio
+import os
 import threading
 import uuid
+from pathlib import Path
 
 import boto3
 import structlog
 from fastapi import UploadFile
 
 from app.config import settings
+
+# Local upload directory for development (when R2 is not configured)
+LOCAL_UPLOAD_DIR = Path("uploads")
 
 logger = structlog.get_logger()
 
@@ -117,10 +122,13 @@ async def upload_file(file: UploadFile, folder: str) -> str:
     key = f"{folder}/{uuid.uuid4()}.{ext}"
 
     if not settings.R2_ENDPOINT_URL:
-        # Development mode: return a mock URL
-        mock_url = f"https://storage.emecano.dev/{key}"
-        logger.info("file_upload_mock", key=key, url=mock_url)
-        return mock_url
+        # Development mode: save to local filesystem
+        local_path = LOCAL_UPLOAD_DIR / key
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(content)
+        local_url = f"/uploads/{key}"
+        logger.info("file_upload_local", key=key, path=str(local_path))
+        return local_url
 
     client = get_s3_client()
     await asyncio.to_thread(
@@ -154,7 +162,7 @@ async def generate_presigned_url(key: str, expires_in: int = 900) -> str:
         Pre-signed URL string, or a mock URL in development.
     """
     if not settings.R2_ENDPOINT_URL:
-        return f"https://storage.emecano.dev/{key}?presigned=mock&expires={expires_in}"
+        return f"/uploads/{key}"
 
     client = get_s3_client()
     url = await asyncio.to_thread(
@@ -174,10 +182,10 @@ def get_key_from_url(url: str) -> str | None:
     prefix = f"{settings.R2_PUBLIC_URL}/"
     if url.startswith(prefix):
         return url[len(prefix):]
-    # Mock URL in dev mode
-    mock_prefix = "https://storage.emecano.dev/"
-    if url.startswith(mock_prefix):
-        return url[len(mock_prefix):]
+    # Local URL in dev mode
+    local_prefix = "/uploads/"
+    if url.startswith(local_prefix):
+        return url[len(local_prefix):]
     return None
 
 
@@ -211,9 +219,12 @@ async def upload_file_bytes(content: bytes, key: str, content_type: str) -> str:
         raise ValueError(f"Content too large. Maximum size is {MAX_FILE_BYTES_SIZE // (1024 * 1024)} MB.")
 
     if not settings.R2_ENDPOINT_URL:
-        mock_url = f"https://storage.emecano.dev/{key}"
-        logger.info("file_upload_mock", key=key, url=mock_url)
-        return mock_url
+        local_path = LOCAL_UPLOAD_DIR / key
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(content)
+        local_url = f"/uploads/{key}"
+        logger.info("file_upload_local", key=key, path=str(local_path))
+        return local_url
 
     client = get_s3_client()
     await asyncio.to_thread(

@@ -43,7 +43,7 @@ async def test_upload_file_valid_jpeg():
     file = _make_upload_file("test.jpg", b"\xff\xd8\xff" + b"fake-jpeg-content", "image/jpeg")
 
     url = await upload_file(file, "proofs")
-    assert url.startswith("https://storage.emecano.dev/proofs/")
+    assert url.startswith("/uploads/proofs/")
     assert url.endswith(".jpg")
 
 
@@ -53,7 +53,7 @@ async def test_upload_file_valid_png():
     file = _make_upload_file("test.png", b"\x89PNG" + b"fake-png-content", "image/png")
 
     url = await upload_file(file, "identity")
-    assert url.startswith("https://storage.emecano.dev/identity/")
+    assert url.startswith("/uploads/identity/")
     assert url.endswith(".png")
 
 
@@ -104,7 +104,7 @@ async def test_upload_file_with_r2_endpoint():
 async def test_upload_file_bytes_dev_mode():
     """Test upload_file_bytes in dev mode (no R2 endpoint)."""
     url = await upload_file_bytes(b"pdf-bytes", "reports/test.pdf", "application/pdf")
-    assert url == "https://storage.emecano.dev/reports/test.pdf"
+    assert url == "/uploads/reports/test.pdf"
 
 
 @pytest.mark.asyncio

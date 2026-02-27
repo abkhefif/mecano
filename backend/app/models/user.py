@@ -32,6 +32,8 @@ class User(Base):
     # CRIT-5: OTP code for email verification
     verification_code: Mapped[str | None] = mapped_column(String(6), nullable=True)
     verification_code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
 
     mechanic_profile: Mapped["MechanicProfile | None"] = relationship(
         "MechanicProfile", back_populates="user", uselist=False, lazy="raise"

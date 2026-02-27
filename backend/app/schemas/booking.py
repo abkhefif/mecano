@@ -147,6 +147,8 @@ class BookingCreateResponse(BaseModel):
     # from the buyer who creates the booking.
     booking: BookingBuyerResponse
     client_secret: str | None = None
+    ephemeral_key: str | None = None
+    customer_id: str | None = None
 
 
 class RefuseRequest(BaseModel):

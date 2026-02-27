@@ -287,6 +287,15 @@ app.include_router(proposals_router, prefix="/proposals", tags=["proposals"])
 app.include_router(reports_router)
 app.include_router(admin_router)
 
+# Serve locally uploaded files when R2 is not configured (development mode)
+if not settings.R2_ENDPOINT_URL:
+    from pathlib import Path
+    from fastapi.staticfiles import StaticFiles
+
+    _uploads_dir = Path("uploads")
+    _uploads_dir.mkdir(exist_ok=True)
+    app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
+
 
 @app.get("/health")
 @limiter.limit("60/minute")

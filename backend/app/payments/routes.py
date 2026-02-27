@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.dependencies import get_current_admin, get_current_mechanic
+from app.dependencies import get_current_admin, get_current_mechanic, get_current_user
 from app.models.booking import Booking
 from app.models.dispute import DisputeCase
 from app.models.enums import BookingStatus, DisputeReason, DisputeStatus
@@ -26,6 +26,8 @@ from app.services.stripe_service import (
     capture_payment_intent,
     create_connect_account,
     create_login_link,
+    detach_payment_method,
+    list_payment_methods,
     refund_payment_intent,
     verify_webhook_signature,
 )
@@ -447,3 +449,44 @@ async def resolve_dispute(
     await db.flush()
     logger.info("dispute_resolved", dispute_id=str(body.dispute_id), resolution=body.resolution)
     return {"status": "resolved", "resolution": body.resolution}
+
+
+@router.get("/methods")
+@limiter.limit("30/minute")
+async def get_payment_methods(
+    request: Request,
+    user: User = Depends(get_current_user),
+):
+    """List saved payment methods for the current user."""
+    if not user.stripe_customer_id:
+        return []
+
+    try:
+        methods = await list_payment_methods(user.stripe_customer_id)
+        return methods
+    except Exception as e:
+        logger.error("list_payment_methods_failed", error=str(e), user_id=str(user.id))
+        raise HTTPException(status_code=500, detail="Failed to retrieve payment methods")
+
+
+@router.delete("/methods/{payment_method_id}")
+@limiter.limit("10/minute")
+async def delete_payment_method(
+    request: Request,
+    payment_method_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Remove a saved payment method."""
+    if not user.stripe_customer_id:
+        raise HTTPException(status_code=404, detail="No payment methods found")
+
+    # Validate payment_method_id format (pm_xxxxx)
+    if not payment_method_id.startswith("pm_"):
+        raise HTTPException(status_code=400, detail="Invalid payment method ID")
+
+    try:
+        await detach_payment_method(payment_method_id)
+        return {"status": "deleted"}
+    except Exception as e:
+        logger.error("detach_payment_method_failed", error=str(e), pm_id=payment_method_id)
+        raise HTTPException(status_code=500, detail="Failed to remove payment method")

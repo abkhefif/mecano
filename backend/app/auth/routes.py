@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials
 import jwt
@@ -60,6 +60,7 @@ from app.services.email_service import (
     send_password_reset_email,
     send_verification_email,
 )
+from app.services.storage import upload_file
 from app.services.stripe_service import cancel_payment_intent
 from app.utils.rate_limit import AUTH_RATE_LIMIT, limiter
 
@@ -608,6 +609,25 @@ async def update_me(
     )
     updated_user = result.scalar_one()
     return updated_user
+
+
+@router.post("/me/photo", status_code=status.HTTP_200_OK)
+@limiter.limit(AUTH_RATE_LIMIT)
+async def upload_user_photo(
+    request: Request,
+    photo: UploadFile,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload or replace the user's profile photo."""
+    try:
+        photo_url = await upload_file(photo, "avatars")
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    user.photo_url = photo_url
+    await db.flush()
+    logger.info("user_photo_uploaded", user_id=str(user.id))
+    return {"photo_url": photo_url}
 
 
 @router.post("/push-token")

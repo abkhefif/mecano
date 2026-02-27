@@ -51,11 +51,11 @@ def test_get_key_from_url_with_public_url():
     assert result == "proofs/abc123.jpg"
 
 
-def test_get_key_from_url_mock_url():
-    """Extract key from dev mock URL (R2_PUBLIC_URL must be non-empty to pass guard)."""
+def test_get_key_from_url_local_url():
+    """Extract key from dev local URL (R2_PUBLIC_URL must be non-empty to pass guard)."""
     with patch("app.services.storage.settings") as mock_s:
         mock_s.R2_PUBLIC_URL = "https://cdn.emecano.fr"
-        result = get_key_from_url("https://storage.emecano.dev/identity/doc.pdf")
+        result = get_key_from_url("/uploads/identity/doc.pdf")
     assert result == "identity/doc.pdf"
 
 
@@ -80,12 +80,11 @@ def test_get_key_from_url_unrecognized():
 
 @pytest.mark.asyncio
 async def test_generate_presigned_url_dev_mode():
-    """Returns mock presigned URL in dev mode."""
+    """Returns local URL in dev mode."""
     with patch("app.services.storage.settings") as mock_s:
         mock_s.R2_ENDPOINT_URL = ""
         url = await generate_presigned_url("proofs/abc.jpg", expires_in=900)
-    assert "presigned=mock" in url
-    assert "proofs/abc.jpg" in url
+    assert url == "/uploads/proofs/abc.jpg"
 
 
 @pytest.mark.asyncio
@@ -131,12 +130,12 @@ async def test_get_sensitive_url_no_key():
 
 @pytest.mark.asyncio
 async def test_get_sensitive_url_converts():
-    """Converts public URL to presigned URL."""
+    """Converts local URL to presigned URL in dev mode."""
     with patch("app.services.storage.settings") as mock_s:
         mock_s.R2_PUBLIC_URL = "https://cdn.emecano.fr"
         mock_s.R2_ENDPOINT_URL = ""
-        result = await get_sensitive_url("https://storage.emecano.dev/identity/doc.pdf")
-    assert "presigned=mock" in result
+        result = await get_sensitive_url("/uploads/identity/doc.pdf")
+    assert result == "/uploads/identity/doc.pdf"
 
 
 # ============ upload_file_bytes ============
@@ -152,11 +151,11 @@ async def test_upload_file_bytes_too_large():
 
 @pytest.mark.asyncio
 async def test_upload_file_bytes_dev_mode():
-    """Returns mock URL in dev mode."""
+    """Returns local URL in dev mode."""
     with patch("app.services.storage.settings") as mock_s:
         mock_s.R2_ENDPOINT_URL = ""
         url = await upload_file_bytes(b"%PDF-1.4 test", "reports/test.pdf", "application/pdf")
-    assert url == "https://storage.emecano.dev/reports/test.pdf"
+    assert url == "/uploads/reports/test.pdf"
 
 
 @pytest.mark.asyncio
