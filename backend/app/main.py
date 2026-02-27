@@ -15,6 +15,7 @@ from app.admin.routes import router as admin_router
 from app.auth.routes import router as auth_router
 from app.bookings.routes import router as bookings_router
 from app.config import settings
+from app.demands.routes import router as demands_router
 from app.database import async_session
 from app.mechanics.routes import router as mechanics_router
 from app.messages.routes import router as messages_router
@@ -183,7 +184,12 @@ else:
     # Do NOT deploy with allow_origins=["*"] — it disables browser same-origin protections.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:3000", "http://localhost:8081", "http://localhost:19006"],
+        allow_origins=[
+            "http://localhost:3000",
+            "http://localhost:5173",
+            "http://localhost:8081",
+            "http://localhost:19006",
+        ],
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -284,6 +290,7 @@ app.include_router(referrals_router, prefix="/referrals", tags=["referrals"])
 app.include_router(messages_router, tags=["messages"])
 app.include_router(notifications_router, prefix="/notifications", tags=["notifications"])
 app.include_router(proposals_router, prefix="/proposals", tags=["proposals"])
+app.include_router(demands_router, prefix="/demands", tags=["demands"])
 app.include_router(reports_router)
 app.include_router(admin_router)
 

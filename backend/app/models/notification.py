@@ -15,7 +15,9 @@ class Notification(Base):
             "type IN ("
             "'booking_created', 'booking_confirmed', 'booking_refused', "
             "'booking_cancelled', 'check_out_done', 'booking_disputed', "
-            "'new_message', 'reminder', 'no_show', 'profile_verification'"
+            "'new_message', 'reminder', 'no_show', 'profile_verification', "
+            "'proposal_received', 'proposal_accepted', 'proposal_refused', 'proposal_counter', "
+            "'demand_nearby', 'mechanic_interested'"
             ")",
             name="ck_notification_type",
         ),

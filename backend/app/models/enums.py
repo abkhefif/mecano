@@ -111,6 +111,12 @@ class ProposalStatus(str, enum.Enum):
     CANCELLED = "cancelled"
 
 
+class DemandStatus(str, enum.Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+    EXPIRED = "expired"
+
+
 class NotificationType(str, enum.Enum):
     BOOKING_CREATED = "booking_created"
     BOOKING_CONFIRMED = "booking_confirmed"
@@ -126,6 +132,8 @@ class NotificationType(str, enum.Enum):
     PROPOSAL_ACCEPTED = "proposal_accepted"
     PROPOSAL_REFUSED = "proposal_refused"
     PROPOSAL_COUNTER = "proposal_counter"
+    DEMAND_NEARBY = "demand_nearby"
+    MECHANIC_INTERESTED = "mechanic_interested"
 
 
 class ServiceLocation(str, enum.Enum):
