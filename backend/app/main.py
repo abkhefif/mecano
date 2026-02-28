@@ -1,3 +1,4 @@
+import hmac
 import re as _re
 import uuid as _uuid
 from contextlib import asynccontextmanager
@@ -270,7 +271,7 @@ async def metrics_endpoint(request: Request):
 
     if settings.METRICS_API_KEY:
         api_key = request.headers.get("x-metrics-key", "")
-        if api_key != settings.METRICS_API_KEY:
+        if not hmac.compare_digest(api_key, settings.METRICS_API_KEY):
             raise HTTPException(
                 status_code=403,
                 detail="Invalid metrics API key",

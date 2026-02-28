@@ -1,8 +1,12 @@
+import asyncio
+import re
 from datetime import datetime, timezone
 
 import stripe
 import structlog
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
+
+from app.config import settings
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -473,7 +477,7 @@ async def get_payment_methods(
 @limiter.limit("10/minute")
 async def delete_payment_method(
     request: Request,
-    payment_method_id: str,
+    payment_method_id: str = Path(..., max_length=100),
     user: User = Depends(get_current_user),
 ):
     """Remove a saved payment method."""
@@ -481,8 +485,24 @@ async def delete_payment_method(
         raise HTTPException(status_code=404, detail="No payment methods found")
 
     # Validate payment_method_id format (pm_xxxxx)
-    if not payment_method_id.startswith("pm_"):
+    if not re.match(r"^pm_[a-zA-Z0-9]{10,50}$", payment_method_id):
         raise HTTPException(status_code=400, detail="Invalid payment method ID")
+
+    # SEC-003: Verify the payment method belongs to this user before detaching
+    try:
+        pm = await asyncio.wait_for(
+            asyncio.to_thread(
+                stripe.PaymentMethod.retrieve,
+                payment_method_id,
+                api_key=settings.STRIPE_SECRET_KEY,
+            ),
+            timeout=15.0,
+        )
+    except Exception:
+        raise HTTPException(status_code=404, detail="Payment method not found")
+
+    if pm.customer != user.stripe_customer_id:
+        raise HTTPException(status_code=403, detail="Payment method does not belong to you")
 
     try:
         await detach_payment_method(payment_method_id)

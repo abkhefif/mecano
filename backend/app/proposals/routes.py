@@ -137,7 +137,7 @@ async def create_proposal(
         data={"proposal_id": str(proposal.id), "type": "proposal_received"},
     )
 
-    await db.commit()
+    await db.flush()
     logger.info("proposal_created", proposal_id=str(proposal.id), buyer_id=str(buyer.id), mechanic_id=str(body.mechanic_id))
 
     return _proposal_to_response(proposal, buyer=buyer, mechanic_user=mechanic.user)
@@ -424,7 +424,7 @@ async def accept_proposal(
             data={"proposal_id": str(proposal.id), "booking_id": str(booking.id), "type": "proposal_accepted"},
         )
 
-    await db.commit()
+    await db.flush()
     logger.info("proposal_accepted", proposal_id=str(proposal.id), booking_id=str(booking.id))
 
     return {
@@ -481,7 +481,7 @@ async def refuse_proposal(
                 data={"proposal_id": str(proposal.id), "type": "proposal_refused"},
             )
 
-    await db.commit()
+    await db.flush()
     logger.info("proposal_refused", proposal_id=str(proposal.id))
     return {"status": "refused", "proposal_id": str(proposal.id)}
 
@@ -576,7 +576,7 @@ async def counter_proposal(
                 data={"proposal_id": str(new_proposal.id), "type": "proposal_counter"},
             )
 
-    await db.commit()
+    await db.flush()
     logger.info(
         "proposal_counter",
         old_id=str(proposal.id),

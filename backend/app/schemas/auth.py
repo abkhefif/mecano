@@ -145,8 +145,8 @@ class PushTokenRequest(BaseModel):
     @classmethod
     def validate_expo_token_format(cls, v: str) -> str:
         import re
-        if not re.match(r"^ExponentPushToken\[.+\]$", v):
-            raise ValueError("Token must be a valid Expo push token (ExponentPushToken[...])")
+        if not re.match(r"^Expo(nent)?PushToken\[[a-zA-Z0-9_-]+\]$", v):
+            raise ValueError("Token must be a valid Expo push token (ExponentPushToken[...] or ExpoPushToken[...])")
         return v
 
 

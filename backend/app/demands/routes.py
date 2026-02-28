@@ -153,7 +153,7 @@ async def create_demand(
         )
         notified_count += 1
 
-    await db.commit()
+    await db.flush()
     logger.info(
         "demand_created",
         demand_id=str(demand.id),
@@ -328,6 +328,10 @@ async def get_demand(
                 2,
             )
 
+        if own_interest is None:
+            if dist_km is None or dist_km > float(mechanic_profile.max_radius_km):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Demand is outside your service area")
+
         demand_resp = _demand_to_response(demand, distance_km=dist_km)
         own_interest_resp = (
             _interest_to_response(own_interest) if own_interest else None
@@ -468,7 +472,7 @@ async def express_interest(
         },
     )
 
-    await db.commit()
+    await db.flush()
     logger.info(
         "demand_interest_created",
         demand_id=str(demand.id),
@@ -510,7 +514,7 @@ async def close_demand(
         )
 
     demand.status = DemandStatus.CLOSED
-    await db.commit()
+    await db.flush()
     logger.info("demand_closed", demand_id=str(demand.id), buyer_id=str(buyer.id))
 
     return {"status": "closed", "demand_id": str(demand.id)}

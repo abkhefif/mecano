@@ -205,9 +205,6 @@ async def register(request: Request, response: Response, body: RegisterRequest, 
     """Register a new user (buyer or mechanic). Admin registration is not allowed."""
     # L-2: Prevent caching of token responses by edge proxies/CDNs
     response.headers["Cache-Control"] = "no-store"
-    if body.role.value == "admin":
-        raise HTTPException(status_code=403, detail="Admin registration not allowed")
-
     result = await db.execute(select(User).where(User.email == body.email))
     if result.scalar_one_or_none():
         # H-02: Don't reveal email existence - return same response as success
@@ -461,6 +458,9 @@ async def login(request: Request, response: Response, body: LoginRequest, db: As
     # SEC-004: Reset counter on successful login
     await _clear_login_attempts(body.email)
 
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account has been deactivated. Contact support for more information.")
+
     logger.info("user_login", user_id=str(user.id))
     user_id_str = str(user.id)
     return TokenResponse(
@@ -532,6 +532,8 @@ async def refresh_tokens(request: Request, response: Response, body: RefreshRequ
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found",
         )
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account has been deactivated")
 
     # SEC-04: Reject refresh tokens issued before a password change
     if user.password_changed_at:

@@ -88,13 +88,13 @@ async def test_send_booking_reminder_2h_with_phone():
         buyer_subject = buyer_call.kwargs.get("subject", "")
         assert "dans 2h" in buyer_subject
 
-        # 2h reminder SHOULD include phone contacts
+        # SEC-015: Phone numbers must NOT appear in reminder emails
         buyer_body = buyer_call.kwargs.get("body", "")
-        assert "+33622222222" in buyer_body  # buyer sees mechanic phone
+        assert "+33622222222" not in buyer_body
 
         mechanic_call = mock_email.call_args_list[1]
         mechanic_body = mechanic_call.kwargs.get("body", "")
-        assert "+33611111111" in mechanic_body  # mechanic sees buyer phone
+        assert "+33611111111" not in mechanic_body
 
 
 @pytest.mark.asyncio

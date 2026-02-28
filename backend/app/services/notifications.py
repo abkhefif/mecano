@@ -181,8 +181,7 @@ async def send_booking_reminder(
              f"Date: {slot_date} a {slot_time}\n"
              f"Vehicule: {safe_vehicle_info}\n"
              f"Adresse: {safe_meeting_address}\n"
-             + (f"\nContact mecanicien: {mechanic_phone}" if hours_before <= 2 and mechanic_phone else "")
-             + "\n\nL'equipe eMecano",
+             "\n\nL'equipe eMecano",
     )
 
     # Email to mechanic
@@ -193,8 +192,7 @@ async def send_booking_reminder(
              f"Date: {slot_date} a {slot_time}\n"
              f"Vehicule: {safe_vehicle_info}\n"
              f"Adresse: {safe_meeting_address}\n"
-             + (f"\nContact acheteur: {buyer_phone}" if hours_before <= 2 and buyer_phone else "")
-             + "\n\nL'equipe eMecano",
+             "\n\nL'equipe eMecano",
     )
 
     logger.info("booking_reminder_sent", booking_id=booking_id, hours_before=hours_before)
