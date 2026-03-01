@@ -19,6 +19,7 @@ from app.models.mechanic_profile import MechanicProfile
 from app.models.user import User
 from app.schemas.admin import VerifyMechanicRequest, SuspendUserRequest
 from app.services.storage import get_sensitive_url
+from app.utils.csv_sanitize import sanitize_csv_cell
 
 logger = structlog.get_logger()
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -137,11 +138,11 @@ async def list_users(
         "users": [
             {
                 "id": str(u.id),
-                "email": u.email,
+                "email": sanitize_csv_cell(u.email),
                 "role": u.role.value if hasattr(u.role, "value") else u.role,
-                "first_name": u.first_name,
-                "last_name": u.last_name,
-                "phone": u.phone,
+                "first_name": sanitize_csv_cell(u.first_name),
+                "last_name": sanitize_csv_cell(u.last_name),
+                "phone": sanitize_csv_cell(u.phone),
                 "is_verified": u.is_verified,
                 "created_at": u.created_at.isoformat() if u.created_at else None,
             }
@@ -522,8 +523,8 @@ async def list_bookings(
                 "buyer_id": str(b.buyer_id),
                 "mechanic_id": str(b.mechanic_id) if b.mechanic_id else None,
                 "status": b.status.value if hasattr(b.status, "value") else b.status,
-                "vehicle_brand": b.vehicle_brand,
-                "vehicle_model": b.vehicle_model,
+                "vehicle_brand": sanitize_csv_cell(b.vehicle_brand),
+                "vehicle_model": sanitize_csv_cell(b.vehicle_model),
                 "vehicle_year": b.vehicle_year,
                 "total_price": float(b.total_price),
                 "commission_amount": float(b.commission_amount),
@@ -584,7 +585,7 @@ async def list_disputes(
                 "opened_by": str(d.opened_by),
                 "opener_email": d.opener.email if d.opener else None,
                 "reason": d.reason.value if hasattr(d.reason, "value") else d.reason,
-                "description": d.description,
+                "description": sanitize_csv_cell(d.description),
                 "status": d.status.value if hasattr(d.status, "value") else d.status,
                 "created_at": d.created_at.isoformat() if d.created_at else None,
                 "resolved_at": d.resolved_at.isoformat() if d.resolved_at else None,

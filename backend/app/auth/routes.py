@@ -1,4 +1,5 @@
 import asyncio
+import hmac
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -62,7 +63,8 @@ from app.services.email_service import (
 )
 from app.services.storage import upload_file
 from app.services.stripe_service import cancel_payment_intent
-from app.utils.rate_limit import AUTH_RATE_LIMIT, limiter
+from app.utils.rate_limit import AUTH_RATE_LIMIT, RESEND_VERIFICATION_RATE_LIMIT, limiter
+from app.utils.csv_sanitize import sanitize_csv_cell as _sanitize_csv_cell
 
 # H-01: Dummy hash for constant-time login failure (prevents timing oracle)
 _DUMMY_HASH = "$2b$12$LJ3m4ys3Lg2UxMHFSKDcOedTqJtFHSfVLO7GRFXlI0Xp9jHQvaFYe"
@@ -183,20 +185,6 @@ def _cleanup_login_attempts_dict(cutoff: datetime) -> None:
         )
         for k in sorted_keys[: len(_LOGIN_ATTEMPTS) - _MAX_LOGIN_ATTEMPTS_ENTRIES]:
             del _LOGIN_ATTEMPTS[k]
-
-
-def _sanitize_csv_cell(value: str | None) -> str | None:
-    """Sanitize a string value to prevent CSV/Excel formula injection.
-
-    If the value starts with a character that Excel or other spreadsheet
-    applications interpret as a formula prefix, prepend a single quote to
-    neutralize it.
-    """
-    if value is None:
-        return None
-    if isinstance(value, str) and value and value[0] in ("=", "+", "-", "@", "\t", "\r"):
-        return "'" + value
-    return value
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
@@ -323,7 +311,7 @@ async def verify_email(request: Request, body: EmailVerifyRequest, db: AsyncSess
         if (
             not user.verification_code
             or not user.verification_code_expires_at
-            or user.verification_code != body.code
+            or not hmac.compare_digest(user.verification_code, body.code)
             or user.verification_code_expires_at < datetime.now(timezone.utc)
         ):
             raise HTTPException(
@@ -400,7 +388,7 @@ async def verify_email(request: Request, body: EmailVerifyRequest, db: AsyncSess
 
 
 @router.post("/resend-verification")
-@limiter.limit(AUTH_RATE_LIMIT)
+@limiter.limit(RESEND_VERIFICATION_RATE_LIMIT)
 async def resend_verification(request: Request, body: ResendVerificationRequest, db: AsyncSession = Depends(get_db)):
     """Resend the email verification link."""
     result = await db.execute(select(User).where(User.email == body.email))

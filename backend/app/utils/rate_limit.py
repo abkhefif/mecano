@@ -64,5 +64,6 @@ limiter = Limiter(
 # Per-endpoint rate limit decorators for sensitive operations
 AUTH_RATE_LIMIT = "30/minute" if _is_dev else "5/minute"
 CODE_ENTRY_RATE_LIMIT = "10/minute" if _is_dev else "3/minute"
+RESEND_VERIFICATION_RATE_LIMIT = "10/minute" if _is_dev else "2/minute"
 # SEC-016: Moderate rate limit for list/search endpoints to prevent scraping
 LIST_RATE_LIMIT = "100/minute" if _is_dev else "30/minute"
