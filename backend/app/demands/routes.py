@@ -212,12 +212,13 @@ async def list_nearby_demands(
     now = datetime.now(timezone.utc)
 
     # Fetch open, non-expired demands with a future or current desired_date
+    # F-02: SQL LIMIT cap to prevent unbounded memory consumption
     result = await db.execute(
         select(BuyerDemand).where(
             BuyerDemand.status == DemandStatus.OPEN,
             BuyerDemand.expires_at > now,
             BuyerDemand.desired_date >= today,
-        )
+        ).limit(200)
     )
     demands = result.scalars().all()
 
@@ -243,9 +244,14 @@ async def list_nearby_demands(
         if dist_km > mechanic_profile.max_radius_km:
             continue
 
-        filtered.append(
-            _demand_to_response(demand, distance_km=round(dist_km, 2))
-        )
+        resp = _demand_to_response(demand, distance_km=round(dist_km, 2))
+        # F-04: Mask precise GPS for listing view — approximate area is sufficient
+        # for mechanics to decide whether to express interest. Exact coordinates
+        # are revealed only after interest is accepted (via booking/proposal).
+        resp.meeting_lat = round(resp.meeting_lat, 2)  # ~1.1 km precision
+        resp.meeting_lng = round(resp.meeting_lng, 2)
+        resp.meeting_address = None
+        filtered.append(resp)
 
     return filtered
 
@@ -333,6 +339,12 @@ async def get_demand(
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Demand is outside your service area")
 
         demand_resp = _demand_to_response(demand, distance_km=dist_km)
+        # F-03/F-04: Mask precise GPS for mechanics without an active interest.
+        # Mechanics with an interest need the exact address for the inspection.
+        if own_interest is None:
+            demand_resp.meeting_lat = round(demand_resp.meeting_lat, 2)
+            demand_resp.meeting_lng = round(demand_resp.meeting_lng, 2)
+            demand_resp.meeting_address = None
         own_interest_resp = (
             _interest_to_response(own_interest) if own_interest else None
         )

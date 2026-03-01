@@ -11,8 +11,9 @@ def generate_check_in_code() -> str:
 
 
 def hash_check_in_code(code: str) -> str:
-    """Hash a check-in code with HMAC-SHA-256 + secret salt."""
-    return hmac.new(settings.JWT_SECRET.encode(), code.encode(), hashlib.sha256).hexdigest()
+    """Hash a check-in code with HMAC-SHA-256 + dedicated secret key."""
+    key = settings.CHECK_IN_HMAC_KEY or settings.JWT_SECRET
+    return hmac.new(key.encode(), code.encode(), hashlib.sha256).hexdigest()
 
 
 def verify_check_in_code(code: str, code_hash: str) -> bool:

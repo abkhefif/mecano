@@ -58,7 +58,7 @@ class DemandResponse(BaseModel):
     vehicle_model: str
     vehicle_year: int
     vehicle_plate: str | None
-    meeting_address: str
+    meeting_address: str | None
     meeting_lat: float
     meeting_lng: float
     desired_date: date

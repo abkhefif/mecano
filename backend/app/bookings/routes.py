@@ -567,6 +567,10 @@ async def refuse_booking(
     booking.cancelled_by = "mechanic"
     booking.refund_percentage = 100
     booking.refund_amount = refund_amount
+    # F-01: Clear mechanic GPS data on terminal state (RGPD data minimization)
+    booking.mechanic_lat = None
+    booking.mechanic_lng = None
+    booking.mechanic_location_updated_at = None
 
     # R-01: Lock availability and only release if no other active booking references it
     if booking.availability_id:
@@ -709,6 +713,10 @@ async def cancel_booking(
     booking.cancelled_by = cancelled_by
     booking.refund_percentage = refund_pct
     booking.refund_amount = refund_amount
+    # F-01: Clear mechanic GPS data on terminal state (RGPD data minimization)
+    booking.mechanic_lat = None
+    booking.mechanic_lng = None
+    booking.mechanic_location_updated_at = None
 
     # R-01: Lock availability and only release if no other active booking references it
     if booking.availability_id:
@@ -1106,6 +1114,10 @@ async def check_out(
     db.add(report)
     booking.status = BookingStatus.CHECK_OUT_DONE
     booking.check_out_at = datetime.now(timezone.utc)
+    # F-01: Clear mechanic GPS data after check-out (service done, no tracking needed)
+    booking.mechanic_lat = None
+    booking.mechanic_lng = None
+    booking.mechanic_location_updated_at = None
     await db.flush()
 
     # Notify buyer that the report is ready
@@ -1505,6 +1517,11 @@ async def get_location(
     # M-09: Admin bypass + buyer of this booking can view location
     if user.role != UserRole.ADMIN and booking.buyer_id != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized")
+
+    # F-01: GPS tracking only available for CONFIRMED bookings (matches update_location).
+    # Prevents stale location data from being exposed after the service ends.
+    if booking.status != BookingStatus.CONFIRMED:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No location available")
 
     if booking.mechanic_lat is None or booking.mechanic_lng is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No location available")
