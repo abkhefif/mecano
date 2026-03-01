@@ -33,8 +33,13 @@ def _get_email_client() -> httpx.AsyncClient:
 
 
 def generate_verification_code() -> str:
-    """Generate a cryptographically secure 6-digit OTP code."""
-    return str(secrets.randbelow(900000) + 100000)
+    """Generate a cryptographically secure 6-digit OTP code.
+
+    FINDING-L01: Use the full [000000, 999999] range (zero-padded) instead of
+    [100000, 999999].  The previous implementation excluded ~11 % of the key
+    space, reducing entropy by ~3.3 bits.
+    """
+    return f"{secrets.randbelow(1_000_000):06d}"
 
 
 def create_email_verification_token(email: str) -> str:

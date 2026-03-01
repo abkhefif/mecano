@@ -1,5 +1,6 @@
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
+from math import cos, radians as _math_radians
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -224,23 +225,32 @@ async def list_nearby_demands(
     today = date.today()
     now = datetime.now(timezone.utc)
 
-    # Fetch open, non-expired demands with a future or current desired_date
-    # F-02: SQL LIMIT cap to prevent unbounded memory consumption
-    result = await db.execute(
-        select(BuyerDemand).where(
-            BuyerDemand.status == DemandStatus.OPEN,
-            BuyerDemand.expires_at > now,
-            BuyerDemand.desired_date >= today,
-        ).limit(200)
-    )
-    demands = result.scalars().all()
-
     # If mechanic has no coordinates, return empty list (cannot compute distance)
     if mechanic_profile.city_lat is None or mechanic_profile.city_lng is None:
         return []
 
     mechanic_lat = float(mechanic_profile.city_lat)
     mechanic_lng = float(mechanic_profile.city_lng)
+
+    # FINDING-M04: Pre-filter demands in SQL using a bounding box derived from
+    # the mechanic's max service radius.  This avoids loading up to 200 unrelated
+    # demands into memory and then discarding them in Python.
+    _max_radius_km = float(mechanic_profile.max_radius_km)
+    _lat_delta = _max_radius_km / 111.0
+    _lng_delta = _max_radius_km / (111.0 * max(cos(_math_radians(mechanic_lat)), 0.01))
+
+    result = await db.execute(
+        select(BuyerDemand).where(
+            BuyerDemand.status == DemandStatus.OPEN,
+            BuyerDemand.expires_at > now,
+            BuyerDemand.desired_date >= today,
+            BuyerDemand.meeting_lat >= mechanic_lat - _lat_delta,
+            BuyerDemand.meeting_lat <= mechanic_lat + _lat_delta,
+            BuyerDemand.meeting_lng >= mechanic_lng - _lng_delta,
+            BuyerDemand.meeting_lng <= mechanic_lng + _lng_delta,
+        ).limit(200)
+    )
+    demands = result.scalars().all()
 
     filtered: list[DemandResponse] = []
     for demand in demands:

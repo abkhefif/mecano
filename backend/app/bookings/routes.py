@@ -912,6 +912,11 @@ async def enter_code(
         )
 
     if not body.code or len(body.code) != 6 or not body.code.isdigit():
+        # FINDING-L03: Count malformed submissions against the attempt budget so
+        # an attacker cannot probe indefinitely with invalid payloads while
+        # bypassing the brute-force counter.
+        booking.check_in_code_attempts += 1
+        await db.flush()
         raise HTTPException(status_code=400, detail="Code must be 6 digits")
 
     if not verify_check_in_code(body.code, booking.check_in_code):

@@ -138,9 +138,10 @@ async def generate_pdf(
     )
 
     # AUD-B10: Timeout on PDF generation to prevent indefinite hangs
-    # Move HTML constructor into thread to avoid blocking event loop
+    # FINDING-L04: base_url=None prevents WeasyPrint from resolving relative
+    # URLs against the filesystem or internal network (SSRF second-order risk).
     pdf_bytes = await asyncio.wait_for(
-        asyncio.to_thread(lambda: HTML(string=html_content).write_pdf()),
+        asyncio.to_thread(lambda: HTML(string=html_content, base_url=None).write_pdf()),
         timeout=30,
     )
 
@@ -185,8 +186,10 @@ async def generate_payment_receipt(booking_data: dict) -> bytes:
     html_content = template.render(**receipt.model_dump())
 
     # AUD-B10: Timeout on PDF generation to prevent indefinite hangs
+    # FINDING-L04: base_url=None prevents WeasyPrint from resolving relative
+    # URLs against the filesystem or internal network (SSRF second-order risk).
     pdf_bytes = await asyncio.wait_for(
-        asyncio.to_thread(lambda: HTML(string=html_content).write_pdf()),
+        asyncio.to_thread(lambda: HTML(string=html_content, base_url=None).write_pdf()),
         timeout=30,
     )
 

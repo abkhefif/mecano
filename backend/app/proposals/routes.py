@@ -638,6 +638,11 @@ async def _get_proposal_for_user(db: AsyncSession, proposal_id: uuid.UUID, user:
     if not proposal:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Proposal not found")
 
+    # FINDING-P2-N08: Admins have read access to all proposals for dispute
+    # resolution and support investigations — no ownership check required.
+    if user.role == UserRole.ADMIN:
+        return proposal
+
     # Check access
     if user.role == UserRole.BUYER and proposal.buyer_id != user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your proposal")

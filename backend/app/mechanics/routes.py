@@ -5,6 +5,7 @@ from math import cos, radians
 import structlog
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile, status
 from sqlalchemy import and_, cast, func, or_, select, String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -79,7 +80,12 @@ async def list_mechanics(
             MechanicProfile.city_lat <= lat + lat_delta,
             MechanicProfile.city_lng >= lng - lng_delta,
             MechanicProfile.city_lng <= lng + lng_delta,
-            cast(MechanicProfile.accepted_vehicle_types, String).contains(vehicle_type.value),
+            # FINDING-H02: Use JSONB @> operator instead of LIKE on a cast-to-string.
+            # @> does an exact JSON containment check, avoiding partial-match false
+            # positives and enabling a GIN index (create one with:
+            # CREATE INDEX ix_mechanic_vehicle_types_gin ON mechanic_profiles
+            # USING GIN (accepted_vehicle_types);).
+            MechanicProfile.accepted_vehicle_types.cast(JSONB).contains([vehicle_type.value]),
         )
         .limit(200)  # AUD-M10: Reduced from 500 to 200 to limit memory usage
     )

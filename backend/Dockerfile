@@ -1,8 +1,23 @@
+# FINDING-H01: Multi-stage build — build tools are only present in the builder
+# stage and are NOT copied into the final runtime image.
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+
+# System build dependencies needed only at pip-install time
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --user -r requirements.txt
+
+# ── Runtime image ─────────────────────────────────────────────────────────────
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# System dependencies for WeasyPrint
+# Runtime-only system dependencies for WeasyPrint
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpango-1.0-0 \
     libpangocairo-1.0-0 \
@@ -11,15 +26,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     shared-mime-info \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy only the installed packages from the builder stage (no pip, no gcc)
+COPY --from=builder /root/.local /root/.local
 
-COPY . .
+# Copy application source (only what is needed at runtime)
+COPY app/ ./app/
+COPY alembic/ ./alembic/
+COPY alembic.ini .
+
+RUN useradd -m appuser && chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8000
-
-RUN useradd -m appuser
-USER appuser
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=45s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1

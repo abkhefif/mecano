@@ -29,18 +29,29 @@ def _get_storage_uri():
     H-001: Always attempt to use Redis regardless of hostname (no localhost bypass).
     Falls back to in-memory storage if Redis is unreachable in non-production.
     Uses lazy import to avoid circular imports with app.config.settings.
+
+    FINDING-L02: Log a WARNING when the in-memory fallback is activated so that
+    operators are aware that distributed rate limiting is not in effect.
     """
+    import warnings
+
     try:
         from app.config import settings
         if settings.REDIS_URL:
             # Verify Redis is reachable before returning URI
             import redis
-            # REDIS-1: Reduce blocking timeout from 1s to 0.2s at startup
-            r = redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.2)
+            # REDIS-1: Use 0.5s connect timeout for a better balance between
+            # responsiveness at startup and tolerance for slow networks.
+            r = redis.from_url(settings.REDIS_URL, socket_connect_timeout=0.5)
             r.ping()
             return settings.REDIS_URL
-    except Exception:
-        pass
+    except Exception as _exc:
+        warnings.warn(
+            f"Rate limiter: Redis unreachable ({_exc!s}) — falling back to "
+            "in-memory storage.  Distributed rate limiting is NOT active; "
+            "limits are per-process only.",
+            stacklevel=2,
+        )
     return None
 
 

@@ -117,7 +117,9 @@ class MechanicProfileResponse(BaseModel):
 
 
 class UserUpdateRequest(BaseModel):
-    email: EmailStr | None = None
+    # FINDING-L05: Add max_length to prevent oversized email values from reaching
+    # the DB layer; 255 chars is the RFC 5321 maximum for an email address.
+    email: EmailStr | None = Field(None, max_length=255)
     first_name: str | None = Field(None, min_length=3, max_length=100)
     last_name: str | None = Field(None, min_length=3, max_length=100)
     # L-01: Add phone pattern validation matching RegisterRequest
