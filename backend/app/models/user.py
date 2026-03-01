@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, func
+from sqlalchemy import Boolean, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -32,6 +32,7 @@ class User(Base):
     # CRIT-5: OTP code for email verification
     verification_code: Mapped[str | None] = mapped_column(String(6), nullable=True)
     verification_code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verification_code_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     photo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     stripe_customer_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
 

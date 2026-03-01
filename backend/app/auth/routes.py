@@ -307,6 +307,12 @@ async def verify_email(request: Request, body: EmailVerifyRequest, db: AsyncSess
         if user.is_verified:
             return {"status": "already_verified"}
 
+        if user.verification_code_attempts >= 5:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Too many attempts. Please request a new verification code.",
+            )
+
         # Validate code and expiry
         if (
             not user.verification_code
@@ -314,6 +320,8 @@ async def verify_email(request: Request, body: EmailVerifyRequest, db: AsyncSess
             or not hmac.compare_digest(user.verification_code, body.code)
             or user.verification_code_expires_at < datetime.now(timezone.utc)
         ):
+            user.verification_code_attempts += 1
+            await db.flush()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or expired verification code",
@@ -322,6 +330,7 @@ async def verify_email(request: Request, body: EmailVerifyRequest, db: AsyncSess
         user.is_verified = True
         user.verification_code = None
         user.verification_code_expires_at = None
+        user.verification_code_attempts = 0
         await db.flush()
 
         logger.info("email_verified_otp", user_id=str(user.id))
@@ -402,6 +411,7 @@ async def resend_verification(request: Request, body: ResendVerificationRequest,
     code = generate_verification_code()
     user.verification_code = code
     user.verification_code_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    user.verification_code_attempts = 0
     await db.flush()
 
     verification_token = create_email_verification_token(user.email)

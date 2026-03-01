@@ -903,16 +903,15 @@ async def enter_code(
             detail="Too many failed attempts. Please ask the buyer to generate a new code.",
         )
 
-    if not body.code or len(body.code) != 4 or not body.code.isdigit():
-        raise HTTPException(status_code=400, detail="Code must be 4 digits")
+    if not body.code or len(body.code) != 6 or not body.code.isdigit():
+        raise HTTPException(status_code=400, detail="Code must be 6 digits")
 
     if not verify_check_in_code(body.code, booking.check_in_code):
         booking.check_in_code_attempts += 1
         await db.flush()
-        remaining = MAX_CODE_ATTEMPTS - booking.check_in_code_attempts
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Incorrect code. {remaining} attempts remaining.",
+            detail="Incorrect code.",
         )
 
     booking.status = BookingStatus.CHECK_IN_DONE

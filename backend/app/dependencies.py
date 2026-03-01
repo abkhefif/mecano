@@ -111,7 +111,7 @@ async def get_current_mechanic(
     if user.role != UserRole.MECHANIC:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only mechanics can access this resource",
+            detail="Access denied",
         )
 
     result = await db.execute(
@@ -141,7 +141,7 @@ async def get_current_buyer(
     if user.role != UserRole.BUYER:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only buyers can access this resource",
+            detail="Access denied",
         )
     return user
 
