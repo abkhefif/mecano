@@ -2,9 +2,11 @@ import asyncio
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import structlog
 from jinja2 import Environment, FileSystemLoader
+from pydantic import BaseModel
 from weasyprint import HTML
 
 from app.models.booking import Booking
@@ -149,14 +151,38 @@ async def generate_pdf(
     return url
 
 
+class PaymentReceiptData(BaseModel):
+    """FINDING-T05: Typed schema for payment receipt template variables.
+
+    Validates the booking_data dict before passing it to the Jinja2 template,
+    ensuring no unexpected keys can overwrite template globals or built-ins.
+    """
+    receipt_number: str
+    service_date: str
+    mechanic_city: str
+    vehicle_brand: str
+    vehicle_model: str
+    vehicle_year: Optional[int] = None
+    base_price: str
+    obd_supplement: Optional[str] = None
+    travel_fees: str
+    total_price: str
+    payment_status_label: str
+    payment_status_class: str
+
+
 async def generate_payment_receipt(booking_data: dict) -> bytes:
     """Generate a payment receipt PDF from booking data.
 
     Returns the raw PDF bytes (not uploaded to storage).
     """
+    # FINDING-T05: Validate and isolate template variables through a typed schema
+    # to prevent unexpected keys from overwriting Jinja2 template globals.
+    receipt = PaymentReceiptData.model_validate(booking_data)
+
     template = _jinja_env.get_template("payment_receipt.html")
 
-    html_content = template.render(**booking_data)
+    html_content = template.render(**receipt.model_dump())
 
     # AUD-B10: Timeout on PDF generation to prevent indefinite hangs
     pdf_bytes = await asyncio.wait_for(
@@ -164,5 +190,5 @@ async def generate_payment_receipt(booking_data: dict) -> bytes:
         timeout=30,
     )
 
-    logger.info("payment_receipt_generated", receipt_number=booking_data.get("receipt_number"))
+    logger.info("payment_receipt_generated", receipt_number=receipt.receipt_number)
     return pdf_bytes

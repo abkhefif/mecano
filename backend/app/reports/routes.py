@@ -216,6 +216,20 @@ async def download_receipt_with_token(
                 detail="Download token has already been used",
             )
 
+    # MED-01: Reject the token if the user has changed their password after it
+    # was issued.  The check mirrors the password_changed_at guard in get_current_user.
+    user_result = await db.execute(select(User).where(User.id == uuid.UUID(user_id)))
+    token_owner = user_result.scalar_one_or_none()
+    if token_owner and token_owner.password_changed_at:
+        token_iat = token_payload.get("iat")
+        if token_iat:
+            issued_at = datetime.fromtimestamp(token_iat, tz=timezone.utc)
+            if issued_at < token_owner.password_changed_at - timedelta(milliseconds=500):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Token invalidated by password change",
+                )
+
     result = await db.execute(
         select(Booking)
         .where(Booking.id == booking_id)

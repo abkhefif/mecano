@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.dependencies import get_current_mechanic
+from app.dependencies import get_current_mechanic, get_current_user
 from app.models.availability import Availability
 from app.models.diploma import Diploma
 from app.models.enums import VehicleType
@@ -485,6 +485,7 @@ async def list_availabilities(
     date_to: date = Query(...),
     limit: int = Query(200, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),  # HIGH-01: Require authentication to prevent unauthenticated schedule enumeration
 ):
     """List available (non-booked) slots for a mechanic in a date range."""
     if (date_to - date_from).days > 90:

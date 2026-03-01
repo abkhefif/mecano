@@ -124,6 +124,15 @@ async def get_current_mechanic(
             detail="Mechanic profile not found",
         )
 
+    # MED-03: Reject inactive mechanic profiles so that is_active=False has the
+    # same effect as a suspension for all mechanic endpoints, including
+    # /demands/nearby.  Suspension with a date is checked separately below.
+    if not profile.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Mechanic profile is not active. Contact support for more information.",
+        )
+
     if profile.suspended_until and profile.suspended_until > datetime.now(timezone.utc):
         # SEC-008: Generic message — do not leak exact suspension timestamp
         raise HTTPException(

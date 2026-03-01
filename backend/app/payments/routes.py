@@ -488,7 +488,9 @@ async def delete_payment_method(
     if not re.match(r"^pm_[a-zA-Z0-9]{10,50}$", payment_method_id):
         raise HTTPException(status_code=400, detail="Invalid payment method ID")
 
-    # SEC-003: Verify the payment method belongs to this user before detaching
+    # SEC-003: Verify the payment method belongs to this user before detaching.
+    # FINDING-H03: Differentiate between timeout, not-found, and unexpected errors
+    # so that transient network failures do not surface as misleading 404 responses.
     try:
         pm = await asyncio.wait_for(
             asyncio.to_thread(
@@ -498,8 +500,14 @@ async def delete_payment_method(
             ),
             timeout=15.0,
         )
-    except Exception:
+    except asyncio.TimeoutError:
+        logger.error("stripe_pm_retrieve_timeout", pm_id=payment_method_id)
+        raise HTTPException(status_code=503, detail="Payment service temporarily unavailable")
+    except stripe.InvalidRequestError:
         raise HTTPException(status_code=404, detail="Payment method not found")
+    except Exception as e:
+        logger.error("stripe_pm_retrieve_error", error=str(e), pm_id=payment_method_id)
+        raise HTTPException(status_code=500, detail="Failed to retrieve payment method")
 
     if pm.customer != user.stripe_customer_id:
         raise HTTPException(status_code=403, detail="Payment method does not belong to you")

@@ -14,11 +14,13 @@ from app.utils.rate_limit import limiter
 from app.models.audit_log import AuditLog
 from app.models.booking import Booking
 from app.models.dispute import DisputeCase
-from app.models.enums import BookingStatus, DisputeStatus, UserRole
+from app.models.enums import BookingStatus, DisputeStatus, NotificationType, UserRole
 from app.models.mechanic_profile import MechanicProfile
 from app.models.user import User
 from app.schemas.admin import VerifyMechanicRequest, SuspendUserRequest
+from app.services.notifications import create_notification
 from app.services.storage import get_sensitive_url
+from app.services.stripe_service import cancel_payment_intent
 from app.utils.csv_sanitize import sanitize_csv_cell
 
 logger = structlog.get_logger()
@@ -263,6 +265,45 @@ async def suspend_user(
             if body.suspended:
                 profile.suspended_until = datetime.now(timezone.utc) + timedelta(days=body.suspension_days)
                 profile.is_active = False
+
+                # FINDING-P2-N05: Cancel active bookings for the suspended mechanic
+                # so buyers are not left waiting indefinitely with funds held.
+                active_bookings_result = await db.execute(
+                    select(Booking).where(
+                        Booking.mechanic_id == profile.id,
+                        Booking.status.in_([
+                            BookingStatus.PENDING_ACCEPTANCE,
+                            BookingStatus.CONFIRMED,
+                        ]),
+                    ).with_for_update()
+                )
+                cancelled_count = 0
+                for booking in active_bookings_result.scalars().all():
+                    if booking.stripe_payment_intent_id:
+                        try:
+                            await cancel_payment_intent(booking.stripe_payment_intent_id)
+                        except Exception as stripe_err:
+                            logger.error(
+                                "suspend_cancel_stripe_failed",
+                                booking_id=str(booking.id),
+                                error=str(stripe_err),
+                            )
+                    booking.status = BookingStatus.CANCELLED
+                    await create_notification(
+                        db=db,
+                        user_id=booking.buyer_id,
+                        notification_type=NotificationType.BOOKING_CANCELLED,
+                        title="Réservation annulée",
+                        body="Votre réservation a été annulée suite à la suspension du mécanicien.",
+                        data={"booking_id": str(booking.id), "type": "booking_cancelled"},
+                    )
+                    cancelled_count += 1
+
+                logger.info(
+                    "mechanic_suspended_bookings_cancelled",
+                    mechanic_id=str(profile.id),
+                    cancelled_count=cancelled_count,
+                )
             else:
                 profile.suspended_until = None
                 profile.is_active = True

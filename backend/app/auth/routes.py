@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import hmac
 import time
 import uuid
@@ -68,6 +69,16 @@ from app.utils.csv_sanitize import sanitize_csv_cell as _sanitize_csv_cell
 
 # H-01: Dummy hash for constant-time login failure (prevents timing oracle)
 _DUMMY_HASH = "$2b$12$LJ3m4ys3Lg2UxMHFSKDcOedTqJtFHSfVLO7GRFXlI0Xp9jHQvaFYe"
+
+
+def _hash_otp(code: str) -> str:
+    """MED-02: HMAC-SHA256 hash of a 6-digit OTP code using JWT_SECRET as the key.
+
+    The raw code is never written to the database — only its hash is stored.
+    Comparison is done via hmac.compare_digest to remain constant-time.
+    """
+    return hmac.new(settings.JWT_SECRET.encode(), code.encode(), hashlib.sha256).hexdigest()
+
 
 logger = structlog.get_logger()
 router = APIRouter()
@@ -264,13 +275,13 @@ async def register(request: Request, response: Response, body: RegisterRequest, 
             content={"message": "Verification email sent. Check your inbox."},
         )
 
-    # CRIT-5: Generate OTP code and store on user for verification
+    # CRIT-5: Generate OTP code and store its HMAC-hash (MED-02: never store plaintext)
     code = generate_verification_code()
-    user.verification_code = code
+    user.verification_code = _hash_otp(code)
     user.verification_code_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
     await db.flush()
 
-    # Send verification email with OTP code
+    # Send the raw code to the user; the DB only holds the hash
     verification_token = create_email_verification_token(user.email)
     await send_verification_email(user.email, verification_token, code=code)
 
@@ -313,11 +324,13 @@ async def verify_email(request: Request, body: EmailVerifyRequest, db: AsyncSess
                 detail="Too many attempts. Please request a new verification code.",
             )
 
-        # Validate code and expiry
+        # Validate code and expiry.
+        # MED-02: Compare the hash of the submitted code against the stored hash
+        # (constant-time via hmac.compare_digest) — the raw code is never in DB.
         if (
             not user.verification_code
             or not user.verification_code_expires_at
-            or not hmac.compare_digest(user.verification_code, body.code)
+            or not hmac.compare_digest(_hash_otp(body.code), user.verification_code)
             or user.verification_code_expires_at < datetime.now(timezone.utc)
         ):
             user.verification_code_attempts += 1
@@ -407,9 +420,9 @@ async def resend_verification(request: Request, body: ResendVerificationRequest,
     if not user or user.is_verified:
         return {"status": "sent"}
 
-    # CRIT-5: Regenerate OTP code on resend
+    # CRIT-5: Regenerate OTP code on resend — store hash only (MED-02)
     code = generate_verification_code()
-    user.verification_code = code
+    user.verification_code = _hash_otp(code)
     user.verification_code_expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
     user.verification_code_attempts = 0
     await db.flush()
@@ -453,11 +466,22 @@ async def login(request: Request, response: Response, body: LoginRequest, db: As
             detail="Invalid email or password",
         )
 
-    # SEC-004: Reset counter on successful login
-    await _clear_login_attempts(body.email)
-
+    # FINDING-M03: Check is_active BEFORE clearing the lockout counter so that a
+    # deactivated user who knows their password cannot repeatedly reset their own
+    # brute-force counter by supplying correct credentials.
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account has been deactivated. Contact support for more information.")
+
+    # SEC-004: Reset counter on successful login (only for active, valid users)
+    await _clear_login_attempts(body.email)
+
+    # HIGH-03 / FINDING-M01: Reject unverified accounts — prevents token issuance
+    # before email ownership is confirmed.
+    if not user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email verification required. Please verify your email before logging in.",
+        )
 
     logger.info("user_login", user_id=str(user.id))
     user_id_str = str(user.id)
@@ -593,9 +617,12 @@ async def update_me(
             continue
         setattr(user, field, value)
 
-    # SEC-006: If email changed, require re-verification
+    # SEC-006: If email changed, require re-verification.
+    # FINDING-P2-N02: Also update password_changed_at to invalidate ALL existing
+    # tokens via the get_current_user / refresh_tokens checks (CWE-613).
     if email_changed:
         user.is_verified = False
+        user.password_changed_at = datetime.now(timezone.utc)
         verification_token = create_email_verification_token(user.email)
         await send_verification_email(user.email, verification_token)
 
@@ -620,6 +647,13 @@ async def upload_user_photo(
     db: AsyncSession = Depends(get_db),
 ):
     """Upload or replace the user's profile photo."""
+    # FINDING-M02: Require email verification before allowing uploads to prevent
+    # unverified accounts from consuming storage and bypassing moderation.
+    if not user.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Email verification required before uploading a profile photo.",
+        )
     try:
         photo_url = await upload_file(photo, "avatars")
     except ValueError as e:
@@ -1101,7 +1135,7 @@ async def delete_account(
 
 
 @router.get("/me/export")
-@limiter.limit(AUTH_RATE_LIMIT)
+@limiter.limit("2/hour")  # FINDING-P2-N06: Lower the rate limit for this expensive endpoint
 async def export_data(
     request: Request,
     user: User = Depends(get_current_user),
@@ -1111,7 +1145,11 @@ async def export_data(
 
     SEC: All user-facing string fields are sanitized to prevent CSV/Excel
     formula injection when the exported JSON is converted to a spreadsheet.
+
+    FINDING-P2-N06: Each sub-query is capped at MAX_EXPORT_ITEMS to prevent
+    loading unbounded datasets into memory for long-standing accounts.
     """
+    _MAX_EXPORT_ITEMS = 1000
     # Profile info
     profile_data = {
         "id": str(user.id),
@@ -1126,7 +1164,7 @@ async def export_data(
 
     # Bookings (as buyer)
     bookings_result = await db.execute(
-        select(Booking).where(Booking.buyer_id == user.id)
+        select(Booking).where(Booking.buyer_id == user.id).order_by(Booking.created_at.desc()).limit(_MAX_EXPORT_ITEMS)
     )
     bookings = [
         {
@@ -1144,7 +1182,7 @@ async def export_data(
 
     # Reviews written
     reviews_result = await db.execute(
-        select(Review).where(Review.reviewer_id == user.id)
+        select(Review).where(Review.reviewer_id == user.id).order_by(Review.created_at.desc()).limit(_MAX_EXPORT_ITEMS)
     )
     reviews = [
         {
@@ -1159,7 +1197,7 @@ async def export_data(
 
     # Messages sent
     messages_result = await db.execute(
-        select(Message).where(Message.sender_id == user.id)
+        select(Message).where(Message.sender_id == user.id).order_by(Message.created_at.desc()).limit(_MAX_EXPORT_ITEMS)
     )
     messages = [
         {
@@ -1174,7 +1212,7 @@ async def export_data(
 
     # Notifications
     notifications_result = await db.execute(
-        select(Notification).where(Notification.user_id == user.id)
+        select(Notification).where(Notification.user_id == user.id).order_by(Notification.created_at.desc()).limit(_MAX_EXPORT_ITEMS)
     )
     notifications = [
         {
@@ -1218,7 +1256,7 @@ async def export_data(
 
             # Availability
             avail_result = await db.execute(
-                select(Availability).where(Availability.mechanic_id == mechanic_profile.id)
+                select(Availability).where(Availability.mechanic_id == mechanic_profile.id).order_by(Availability.date.desc()).limit(_MAX_EXPORT_ITEMS)
             )
             export["availability"] = [
                 {
@@ -1233,7 +1271,7 @@ async def export_data(
 
             # Diplomas
             diplomas_result = await db.execute(
-                select(Diploma).where(Diploma.mechanic_id == mechanic_profile.id)
+                select(Diploma).where(Diploma.mechanic_id == mechanic_profile.id).limit(_MAX_EXPORT_ITEMS)
             )
             export["diplomas"] = [
                 {

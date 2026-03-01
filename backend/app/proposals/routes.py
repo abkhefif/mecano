@@ -24,7 +24,7 @@ from app.schemas.proposal import (
 )
 from app.services.notifications import create_notification
 from app.services.pricing import calculate_booking_pricing
-from app.services.stripe_service import cancel_payment_intent, create_payment_intent, StripeServiceError
+from app.services.stripe_service import cancel_payment_intent, create_payment_intent, get_or_create_customer, StripeServiceError
 from app.config import settings
 from app.utils.geo import calculate_distance_km
 from app.utils.rate_limit import limiter
@@ -200,10 +200,20 @@ async def get_proposal(
     """Get a proposal with its full negotiation history."""
     proposal = await _get_proposal_for_user(db, proposal_id, user)
 
-    # Build history chain by following parent_id
+    # Build history chain by following parent_id.
+    # FINDING-M05: Guard against circular references in the DB (e.g. from a bad
+    # migration or direct manipulation) with a visited-set to break cycles.
     history = []
     current = proposal
+    visited_ids: set[uuid.UUID] = {proposal.id}
     while current.parent_id:
+        if current.parent_id in visited_ids:
+            logger.warning(
+                "proposal_history_cycle_detected",
+                proposal_id=str(proposal.id),
+                cycle_at=str(current.parent_id),
+            )
+            break
         parent_result = await db.execute(
             select(DateProposal)
             .where(DateProposal.id == current.parent_id)
@@ -215,6 +225,7 @@ async def get_proposal(
         parent = parent_result.scalar_one_or_none()
         if not parent:
             break
+        visited_ids.add(parent.id)
         history.append(_proposal_to_response(
             parent,
             buyer=parent.buyer,
@@ -348,6 +359,22 @@ async def accept_proposal(
     # Determine buyer_id for Stripe metadata
     buyer_id = proposal.buyer_id
 
+    # FINDING-P2-N04: Fetch the buyer and obtain/create their Stripe Customer so
+    # that saved cards are available in the PaymentSheet (mirrors bookings/routes.py).
+    buyer_result = await db.execute(select(User).where(User.id == buyer_id))
+    buyer_user = buyer_result.scalar_one_or_none()
+    if not buyer_user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Buyer not found")
+
+    customer_id = await get_or_create_customer(
+        email=buyer_user.email,
+        user_id=str(buyer_user.id),
+        existing_customer_id=buyer_user.stripe_customer_id,
+    )
+    if not buyer_user.stripe_customer_id:
+        buyer_user.stripe_customer_id = customer_id
+        await db.flush()
+
     try:
         intent = await create_payment_intent(
             amount_cents=amount_cents,
@@ -355,6 +382,7 @@ async def accept_proposal(
             commission_cents=commission_cents,
             metadata={"buyer_id": str(buyer_id), "mechanic_id": str(mechanic.id), "proposal_id": str(proposal.id)},
             idempotency_key=f"proposal_{proposal.id}_{uuid.uuid4().hex[:8]}",
+            customer_id=customer_id,
         )
     except StripeServiceError as e:
         logger.error("proposal_accept_stripe_error", error=str(e), proposal_id=str(proposal.id))

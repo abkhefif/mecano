@@ -200,6 +200,18 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "RESEND_API_KEY must be set in production for email functionality."
                 )
+            # HIGH-02: Require a dedicated CHECK_IN_HMAC_KEY in production.
+            # Without it hash_check_in_code() raises RuntimeError at runtime,
+            # breaking the check-in flow entirely.
+            if not self.CHECK_IN_HMAC_KEY:
+                raise ValueError(
+                    "CHECK_IN_HMAC_KEY must be set in production for check-in code security. "
+                    "Generate a random secret of at least 32 characters."
+                )
+            if len(self.CHECK_IN_HMAC_KEY) < 32:
+                raise ValueError(
+                    "CHECK_IN_HMAC_KEY must be at least 32 characters in production."
+                )
         else:
             if self.DATABASE_URL == _DEFAULT_DATABASE_URL:
                 warnings.warn(

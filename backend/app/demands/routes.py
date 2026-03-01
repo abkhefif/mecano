@@ -109,12 +109,25 @@ async def create_demand(
     db.add(demand)
     await db.flush()
 
-    # Fetch all active, verified mechanics
+    # FINDING-P2-N01: Bound the mechanic query with a geo bounding box and a hard
+    # LIMIT to prevent loading the entire table into memory on every demand creation.
+    # Max absolute service radius is 150 km — use that as the bounding box delta.
+    _MAX_NOTIFICATIONS_PER_DEMAND = 200
+    _MAX_RADIUS_KM = 150.0
+    from math import cos, radians as _radians
+    _lat_delta = _MAX_RADIUS_KM / 111.0
+    _cos_lat = max(cos(_radians(body.meeting_lat)), 0.01)
+    _lng_delta = _MAX_RADIUS_KM / (111.0 * _cos_lat)
+
     mechanics_result = await db.execute(
         select(MechanicProfile).where(
             MechanicProfile.is_active == True,  # noqa: E712
             MechanicProfile.is_identity_verified == True,  # noqa: E712
-        )
+            MechanicProfile.city_lat >= body.meeting_lat - _lat_delta,
+            MechanicProfile.city_lat <= body.meeting_lat + _lat_delta,
+            MechanicProfile.city_lng >= body.meeting_lng - _lng_delta,
+            MechanicProfile.city_lng <= body.meeting_lng + _lng_delta,
+        ).limit(_MAX_NOTIFICATIONS_PER_DEMAND)
     )
     mechanics = mechanics_result.scalars().all()
 

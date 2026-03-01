@@ -196,6 +196,33 @@ else:
         allow_headers=["*"],
     )
 
+# FINDING-H04: Reject requests whose Content-Length exceeds 10 MB globally.
+# This prevents workers from buffering multi-GB payloads into memory.
+# Note: upload endpoints that legitimately receive up to 5 MB files are well
+# within this limit; the Stripe webhook handler has its own 64 KB guard.
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse as _JSONResponse
+
+
+class _MaxBodySizeMiddleware(BaseHTTPMiddleware):
+    _MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MB
+
+    async def dispatch(self, request, call_next):
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > self._MAX_BODY_BYTES:
+                    return _JSONResponse(
+                        {"detail": "Payload too large"},
+                        status_code=413,
+                    )
+            except ValueError:
+                pass
+        return await call_next(request)
+
+
+app.add_middleware(_MaxBodySizeMiddleware)
+
 # SEC-011: Security headers applied in ALL environments; HSTS only in production
 app.add_middleware(SecurityHeadersMiddleware, is_production=settings.is_production)
 
@@ -295,14 +322,34 @@ app.include_router(demands_router, prefix="/demands", tags=["demands"])
 app.include_router(reports_router)
 app.include_router(admin_router)
 
-# Serve locally uploaded files when R2 is not configured (development mode)
+# FINDING-P2-N03: Replaced the unauthenticated StaticFiles mount with an
+# authenticated endpoint.  The old mount exposed all uploaded files (including
+# sensitive identity documents) to anyone who could guess the filename.
 if not settings.R2_ENDPOINT_URL:
     from pathlib import Path
-    from fastapi.staticfiles import StaticFiles
+    from fastapi import Depends as _Depends
 
     _uploads_dir = Path("uploads")
     _uploads_dir.mkdir(exist_ok=True)
-    app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
+
+    from app.dependencies import get_current_user as _get_current_user
+    from app.models.user import User as _User
+    from fastapi.responses import FileResponse
+
+    @app.get("/uploads/{file_path:path}", tags=["uploads"])
+    async def serve_local_upload(
+        file_path: str,
+        _auth_user: _User = _Depends(_get_current_user),
+    ):
+        """Dev-only: serve uploaded files with authentication (R2 not configured)."""
+        uploads_root = _uploads_dir.resolve()
+        full_path = (uploads_root / file_path).resolve()
+        # Path-traversal guard: resolved path must stay inside uploads_dir
+        if not str(full_path).startswith(str(uploads_root)):
+            raise HTTPException(status_code=400, detail="Invalid path")
+        if not full_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(str(full_path))
 
 
 @app.get("/health")
